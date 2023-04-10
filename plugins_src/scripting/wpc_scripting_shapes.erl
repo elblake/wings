@@ -578,8 +578,8 @@ scm_auto_fill_int_path(Str) ->
     case Str of
         "" ->
             Found = find_first_interpreter(setting_autointrp_scm, [
-                "csi",
-                "gosh"
+                "gosh",
+                "csi"
             ]),
             {Found, Found};
         _ ->
@@ -1060,7 +1060,7 @@ read_wscr_string(R) -> read_wscr_string(R, []).
 read_wscr_string(<<$\\, C, R/binary>>, Str) ->
     read_wscr_string(R, [C | Str]);
 read_wscr_string(<<C, R/binary>>, Str) when C =:= 34 ->
-    {lists:reverse(Str), R};
+    {unicode:characters_to_list(iolist_to_binary(lists:reverse(Str)), utf8), R};
 read_wscr_string(<<C, R/binary>>, Str) ->
     read_wscr_string(R, [C | Str]).
 
@@ -1136,7 +1136,7 @@ read_wscr_includes([C | Cont], WSCRAndStrLst, OCont) ->
 %% Certain short hands for an included wscr file
 read_wscr_includes_shorthands(InclFile_0, WSCRFile) ->
     WSCRFile_R = filename:rootname(WSCRFile),
-    iolist_to_binary(string:replace(InclFile_0, "(%)", WSCRFile_R)).
+    lists:flatten(string:replace(InclFile_0, "(%)", WSCRFile_R)).
 
 
 %%
@@ -1814,17 +1814,28 @@ command_extra_params([points | R], #we{vp=Vtab}=We0, EP, MC) ->
 command_extra_params([selected | R], #we{vp=_Vtab}=We0, EP, MC) ->
     P = [<<"selected">>, []],
     command_extra_params(R, We0, [P | EP], MC);
-command_extra_params([faces | R], #we{vp=_Vtab}=We0, EP, MC) ->
-    P = [<<"faces">>, []],
-    command_extra_params(R, We0, [P | EP], MC);
+
+command_extra_params([faces | R], #we{fs=Ftab}=We0, EP, MC) ->
+	FL = gb_trees:keys(Ftab),
+    Colors = [{FIdx, bool_none(wings_va:face_attr(color, FIdx, We0))} || FIdx <- FL],
+    UVs = [{FIdx, bool_none(wings_va:face_attr(uv, FIdx, We0))} || FIdx <- FL],
+	Faces = [{FIdx, {
+		wings_face:vertices_ccw(FIdx, We0),
+		%wings_face:to_vertices([FIdx], We0),
+		bool_none(wings_va:face_attr(color, FIdx, We0)),
+		bool_none(wings_va:face_attr(uv, FIdx, We0))
+	}} || FIdx <- FL],
+    P = [<<"faces">>, Faces],
+    command_extra_params(R, We0, [P | EP],
+		[{face_uvs, UVs}, {face_colors, Colors} | MC]);
 command_extra_params([face_colors | R], #we{fs=Ftab}=We0, EP, MC) ->
     FL = gb_trees:keys(Ftab),
-    Colors = [{F, bool_none(wings_va:face_attr(color, F, We0))} || F <- FL],
+    Colors = [{FIdx, bool_none(wings_va:face_attr(color, FIdx, We0))} || FIdx <- FL],
     P = [<<"face_colors">>, Colors],
     command_extra_params(R, We0, [P | EP], [{face_colors, Colors} | MC]);
 command_extra_params([face_uvs | R], #we{fs=Ftab}=We0, EP, MC) ->
     FL = gb_trees:keys(Ftab),
-    UVs = [{F, bool_none(wings_va:face_attr(uv, F, We0))} || F <- FL],
+    UVs = [{FIdx, bool_none(wings_va:face_attr(uv, FIdx, We0))} || FIdx <- FL],
     P = [<<"face_uvs">>, UVs],
     command_extra_params(R, We0, [P | EP], [{face_uvs, UVs} | MC]);
 command_extra_params([edges | R], #we{vp=_Vtab}=We0, EP, MC) ->
@@ -1882,7 +1893,7 @@ command_modifications([], _MC, _Changeable, We0, true, _) ->
 
 set_face_va_uv(Face, NewUV, #we{fs=Ftab}=We0) ->
     Edge = gb_trees:get(Face, Ftab),
-    set_face_va_uv(Face, Edge, Edge, NewUV, We0).
+    set_face_va_uv(Face, Edge, Edge, lists:reverse(NewUV), We0).
 set_face_va_uv(_, LastEdge, LastEdge, [], We) -> We;
 set_face_va_uv(Face, Edge, LastEdge, [NUV|NewUV], #we{es=Etab}=We0) ->
     case array:get(Edge, Etab) of
@@ -1902,7 +1913,7 @@ new_uv(UV, OA) ->
 
 set_face_va_color(Face, NewColors, #we{fs=Ftab}=We0) ->
     Edge = gb_trees:get(Face, Ftab),
-    set_face_va_color(Face, Edge, Edge, NewColors, We0).
+    set_face_va_color(Face, Edge, Edge, lists:reverse(NewColors), We0).
 set_face_va_color(_, LastEdge, LastEdge, [], We) -> We;
 set_face_va_color(Face, Edge, LastEdge, [NColor|NewColors], #we{es=Etab}=We0) ->
     case array:get(Edge, Etab) of
