@@ -189,6 +189,7 @@
 		(set! *script-directory* (**loader-get-script-directory *script-full-path*))
 		(set! *params* (list-ref cmd 2))
 		(set! *extra-params* (list-ref cmd 3))
+		(**add-to-load-path *script-directory*)
 		(begin (load *script-full-path*))
 		(newline)
 		(**flush-out)

@@ -10,7 +10,6 @@
 ;;     $Id$
 ;;
 
-
 (define (relative_path_from_absolute Path1 Path2)
 	(define (split_components Path)
 		(define Path_1 (list->string (map (lambda (C) (if (eq? C #\\) #\/ C)) (string->list Path))))
@@ -50,4 +49,7 @@
 ;; Chicken scheme requires a flush after every list write.
 (define (**flush-out)
 	(flush-output))
+
+(define (**add-to-load-path Path)
+	#f)
 
