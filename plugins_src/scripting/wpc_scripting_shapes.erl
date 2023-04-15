@@ -43,7 +43,7 @@
 -record(crun_state, {
     p = none, %% Current value when in etp_run
     sett_vars = [], %% Variables such as for script_params, import_params, export_params
-    temp_vars = [] %% Temporary variable storage
+    temp_vars = []  %% Temporary variable storage
 }).
 
 
@@ -144,8 +144,9 @@ command({file, {import, {import_export_from_script, select}}}, fetch_props) ->
     %% TODO: Wings sends this to find out which importer can handle a given file extension.
     {[], fun () -> keep end};
 command({file,{Op,{import_export_from_script, select}}}, St)
-    when Op =:= import; Op =:= export; Op =:= export_selected
-->
+  when Op =:= import;
+       Op =:= export;
+       Op =:= export_selected ->
     case Op of
         import -> ScrTyp = import;
         _      -> ScrTyp = export
@@ -155,8 +156,9 @@ command({file,{Op,{import_export_from_script, select}}}, St)
             import_export_from_script(Op, Params, CR, St)
         end);
 command({file,{Op,{import_export_from_script, {#command_rec{}=CommandRec, Params}}}}, St)
-    when Op =:= import; Op =:= export; Op =:= export_selected
-->
+  when Op =:= import;
+       Op =:= export;
+       Op =:= export_selected ->
     import_export_from_script(Op, Params, CommandRec, St);
 
 
@@ -170,7 +172,7 @@ command({shape, {shape_from_script, {#command_rec{}=CommandRec, Params}}}, St) -
     
     
 command({Op, {command_from_script, select}}, St)
-    when Op =:= body ->
+  when Op =:= body ->
     cmd_select_from_list(setting_paths_commands, Op,
         fun(Params, CR) ->
             command_from_script(Op, Params, CR, St)
@@ -193,9 +195,7 @@ command({edit, {plugin_preferences, shapes_from_scripts_preference}}, St) ->
         {setting_py_int_path, ""},
         {setting_scm_int_path, ""},
         {setting_scm_arguments, ""},
-        {setting_custom1_type, ""},
-        {setting_custom1_int_path, ""},
-        {setting_custom1_init_file, ""}
+        {setting_show_tuple, false}
     ],
     Result = init_dlg_script_preference(
         [ {parent, Parent} ] ++
@@ -210,8 +210,7 @@ command({edit, {plugin_preferences, shapes_from_scripts_preference}}, St) ->
         setting_enable, setting_enable_commands, 
         setting_enable_import, setting_enable_export, setting_paths_shapes,
         setting_paths_commands, setting_paths_import_export,
-        setting_py_int_path, setting_scm_int_path, setting_scm_arguments, 
-        setting_custom1_type, setting_custom1_int_path, setting_custom1_init_file
+        setting_py_int_path, setting_scm_int_path, setting_scm_arguments, setting_show_tuple
     ]],
     St;
     
@@ -219,10 +218,9 @@ command({help, {help_info_script, script_basics}}, _St) ->
     {Title, Text} = help_information(script_basics),
     wings_dialog:info(Title, Text, []);
 command({help, {help_info_script, Which}}, _St)
-    when Which =:= wscr_guide;
-         Which =:= help_info_script;
-         Which =:= help_info_script
-    ->
+  when Which =:= wscr_guide;
+       Which =:= help_info_script;
+       Which =:= help_info_script ->
     %% The PDFs are with the init script files
     InitScriptsDir = filename:absname(code:where_is_file(
         atom_to_list(?MODULE) ++ ?PATH_INIT_POSTFIX)),
@@ -311,17 +309,20 @@ askdialog_e({Text, Number, C}) ->
 
 
 run_script(ScriptType, ScriptFileName, ScriptParams, MoreParams, Settings, DefaultReturn)
-    when is_list(ScriptFileName)
-->
+  when is_list(ScriptFileName) ->
+    ShowTupleDebug = wpa:pref_get(?MODULE, setting_show_tuple, false),
     case get_script_pid(ScriptType, Settings) of
         {ok, PID} ->
             PID ! {run_script, ScriptFileName, ScriptParams, MoreParams, self()},
-            case run_script_getting_data(DefaultReturn, #crun_state{}) of
+            case run_script_getting_data(DefaultReturn, #crun_state{}, ShowTupleDebug) of
                 error -> {error, ?__(2,"No results")};
                 keep -> {ok, keep};
                 {[Lisp], _} ->
                     Tuplefied = run_script_tuplefy(Lisp),
-                    io:format("Tuplefied=~p~n", [Tuplefied]),
+                    if ShowTupleDebug =:= true ->
+                            io:format("Tuplefied=~p~n", [Tuplefied]);
+                        true -> ok
+                    end,
                     {ok, Tuplefied}
             end;
         {error, Err} -> {error, Err}
@@ -329,36 +330,42 @@ run_script(ScriptType, ScriptFileName, ScriptParams, MoreParams, Settings, Defau
 run_script(_ScriptType, none, _ScriptParams, _MoreParams, _Settings, _) ->
     {error, ?__(1, "Script file not found, check if script has the same name "
                    "as the .wscr file, and 'type' matches script file type.")}.
-run_script_getting_data(CurrentReturn, QueryState) ->
+run_script_getting_data(CurrentReturn, QueryState, ShowTupleDebug) ->
     receive 
         {reply, SendPID, {[[{atom, <<"%setvar">>} | _] | _]=Ret_1, _}}
-        when is_pid(SendPID) ->
+          when is_pid(SendPID) ->
             case run_script_tuplefy(Ret_1) of
                 [{'%setvar', VarName, VarValue}|_] when is_list(VarName) ->
                     QueryState_1 = etp_store_temp(binstr(VarName), VarValue, QueryState),
-                    io:format("setvar: ~s = ~w~n", [VarName, VarValue]),
+                    if ShowTupleDebug =:= true ->
+                            io:format("setvar: ~s = ~w~n", [VarName, VarValue]);
+                        true -> ok
+                    end,
                     SendPID ! {reply_to_script, {ok}};
                 _ ->
                     QueryState_1 = QueryState,
                     SendPID ! {reply_to_script, {error}}
             end,
-            run_script_getting_data(CurrentReturn, QueryState_1);
+            run_script_getting_data(CurrentReturn, QueryState_1, ShowTupleDebug);
         {reply, SendPID, {[[{atom, <<"%query">>} | _] | _]=Ret_1, _}}
-        when is_pid(SendPID) ->
+          when is_pid(SendPID) ->
             case run_script_tuplefy(Ret_1) of
                 [{'%query', QueryStr}|_] when is_list(QueryStr) ->
                     {QueryRes, QueryState_1} = crun_pv(QueryStr, QueryState, []),
-                    io:format("query: ~s -> ~p~n", [QueryStr, QueryRes]),
+                    if ShowTupleDebug =:= true ->
+                            io:format("query: ~s -> ~p~n", [QueryStr, QueryRes]);
+                        true -> ok
+                    end,
                     SendPID ! {reply_to_script, {ok, QueryRes}};
                 _ ->
                     QueryState_1 = QueryState,
                     SendPID ! {reply_to_script, {error}}
             end,
-            run_script_getting_data(CurrentReturn, QueryState_1);
+            run_script_getting_data(CurrentReturn, QueryState_1, ShowTupleDebug);
         {reply, SendPID, Ret}
-        when is_pid(SendPID) -> 
+          when is_pid(SendPID) -> 
             ?DEBUG_FMT("reply ~w~n",[Ret]),
-            run_script_getting_data(Ret, QueryState);
+            run_script_getting_data(Ret, QueryState, ShowTupleDebug);
         exited       -> 
             ?DEBUG_FMT("exited~n",[]),
             CurrentReturn
@@ -375,20 +382,26 @@ run_script_tuplefy({{atom, Atom1},Val}) when is_binary(Atom1) ->
 run_script_tuplefy([{atom, <<"!list">>}]) ->
     [];
 %% Specifies this is actually a list of atoms.
-run_script_tuplefy([{atom, <<"!list">>}, {atom, TupleName} | Everything]) when is_binary(TupleName) ->
+run_script_tuplefy([{atom, <<"!list">>}, {atom, TupleName} | Everything])
+  when is_binary(TupleName) ->
     [list_to_atom(unbinstr(TupleName)) | run_script_tuplefy_args(Everything)];
-run_script_tuplefy([{atom, TupleName} | Everything]) when is_binary(TupleName) ->
+run_script_tuplefy([{atom, TupleName} | Everything])
+  when is_binary(TupleName) ->
     list_to_tuple([list_to_atom(unbinstr(TupleName)) | run_script_tuplefy_args(Everything)]);
 run_script_tuplefy(Tuple)
-    when is_tuple(Tuple),
-         is_tuple(element(1, Tuple)),
-         element(1,element(1,Tuple)) =:= atom  ->
+  when is_tuple(Tuple),
+       is_tuple(element(1, Tuple)),
+       element(1,element(1,Tuple)) =:= atom  ->
     run_script_tuplefy(tuple_to_list(Tuple));
 run_script_tuplefy([TupleName | Everything]) when is_binary(TupleName) ->
     list_to_tuple([list_to_atom(unbinstr(TupleName)) | run_script_tuplefy_args(Everything)]);
-run_script_tuplefy([NonSymbol | _]=List) when is_number(NonSymbol); is_tuple(NonSymbol); is_list(NonSymbol) ->
+run_script_tuplefy([NonSymbol | _]=List)
+  when is_number(NonSymbol);
+       is_tuple(NonSymbol);
+       is_list(NonSymbol) ->
     lists:map(fun(A1) -> run_script_tuplefy(A1) end, List);
-run_script_tuplefy({atom, Atom1}) when is_binary(Atom1) ->
+run_script_tuplefy({atom, Atom1})
+  when is_binary(Atom1) ->
     list_to_atom(unbinstr(Atom1));
 run_script_tuplefy(Unk) ->
     Unk.
@@ -423,12 +436,10 @@ get_script_pid(ScriptType_S, Settings) ->
                     Arguments   = [],
                     InitFile = filename:join(InitScriptsDir, "init.py");
                 
-                _Custom ->
-                    Interpreter = proplists:get_value(setting_custom1_int_path, Settings, none),
-                    ArgumentsStr = proplists:get_value(setting_custom1_arguments, Settings, ""),
-                    Arguments   = string:split(ArgumentsStr, " ", all),
-                    DefaultInitFile = filename:join(InitScriptsDir, "init." + ScriptType_S),
-                    InitFile = proplists:get_value(setting_custom1_init_file, Settings, DefaultInitFile)
+                _Other ->
+                    Interpreter = none,
+					Arguments = [],
+					InitFile = ""
             end,
             case Interpreter of
                 none ->
@@ -464,7 +475,9 @@ run_script_runner(Interpreter, Arguments, InitFile) ->
         run_script_runner_loop(Port)
     catch
         error:enoent ->
-            io:format(?__(1,"could not run script interpreter:")++" ~s~n",[Interpreter])
+            io:format("~p" ++
+                ?__(1,"could not run script interpreter:")++" ~s~n",
+                [?MODULE, Interpreter])
     end.
 run_script_runner_loop(Port) ->
     receive
@@ -490,18 +503,17 @@ run_script_runner_loop(Port) ->
 run_script_runner_inner_loop(Port, RetPID, StartedL, LAcc) ->
     receive
         {reply_to_script, Tuple} ->
-            io:format("sending: ~p~n", [Tuple]),
+            ?DEBUG_FMT("sending: ~p~n", [Tuple]),
             try
                 OutP = iolist_to_binary([
                     write_scm(prepare_more_parameters_r(Tuple)), <<"\n">>]),
-                io:format(" ** ~p~n", [OutP]),
+                ?DEBUG_FMT(" ** ~p~n", [OutP]),
                 port_command(Port, OutP)
             catch
                 _:Error ->
                     io:format("ERROR: ~p~n", [Error]),
                     port_command(Port, <<"(error output_error)">>)
             end,
-            io:format("A~n", []),
             run_script_runner_inner_loop(Port, RetPID, StartedL, LAcc);
         {Port, {data, SReply0}} ->
             case SReply0 of
@@ -525,7 +537,7 @@ run_script_runner_inner_loop(Port, RetPID, StartedL, LAcc) ->
                         
                         _ ->
                             SReply_1 = iolist_to_binary(lists:reverse([SReply | LAcc])),
-                            io:format("Data ~p~n", [SReply_1]),
+                            ?DEBUG_FMT("Data ~p~n", [SReply_1]),
                             RetPID ! {reply, self(), scm_parse(SReply_1)},
                             run_script_runner_inner_loop(Port, RetPID, false, [])
                     end;
@@ -970,14 +982,12 @@ read_wscr_content(<<>>, StrList, CWord, CLine, Lines) ->
     read_wscr_content(<<>>, StrList, [], [lists:reverse(CWord) | CLine], Lines);
 
 read_wscr_content(<<C, R/binary>>, StrList, CWord, CLine, Lines)
-    when C =:= $#
-    ->
+  when C =:= $# ->
         R_1 = read_wscr_until_eol(R),
         read_wscr_content(R_1, StrList, CWord, CLine, Lines);
 %% String, not localized
 read_wscr_content(<<C, R/binary>>=RInp, StrList, CWord, CLine, Lines)
-    when C =:= 34
-    ->
+  when C =:= 34 ->
         case CWord of
             [] ->
                 {Str, R_1} = read_wscr_string(R),
@@ -989,8 +999,7 @@ read_wscr_content(<<C, R/binary>>=RInp, StrList, CWord, CLine, Lines)
 %% the first argument integer, or the second argument is used as the string
 %% if not found
 read_wscr_content(<<$?, $_, $_, C, R/binary>>=RInp, StrList, CWord, CLine, Lines)
-    when C =:= 40  %% Opening parenthesis
-    ->
+  when C =:= 40 -> %% Opening parenthesis
         case CWord of
             [] ->
                 {LocStrID, Str, R_1} = read_wscr_string_locale(R),
@@ -1004,8 +1013,7 @@ read_wscr_content(<<$?, $_, $_, C, R/binary>>=RInp, StrList, CWord, CLine, Lines
                 read_wscr_content(RInp, StrList, [], [lists:reverse(CWord) | CLine], Lines)
         end;
 read_wscr_content(<<C, R/binary>>, StrList, CWord, CLine, Lines)
-    when C =:= 32; C =:= 9
-    ->
+  when C =:= 32; C =:= 9 ->
         case CWord of
             [] ->
                 read_wscr_content(R, StrList, [], CLine, Lines);
@@ -1013,8 +1021,7 @@ read_wscr_content(<<C, R/binary>>, StrList, CWord, CLine, Lines)
                 read_wscr_content(R, StrList, [], [lists:reverse(CWord) | CLine], Lines)
         end;
 read_wscr_content(<<C, R/binary>>=RInp, StrList, CWord, CLine, Lines)
-    when C =:= ${
-    ->
+  when C =:= ${ ->
         case CWord of
             [] ->
                 {SubList, R_2} = read_wscr_content(R, StrList, [], [], []),
@@ -1023,8 +1030,7 @@ read_wscr_content(<<C, R/binary>>=RInp, StrList, CWord, CLine, Lines)
                 read_wscr_content(RInp, StrList, [], [lists:reverse(CWord) | CLine], Lines)
         end;
 read_wscr_content(<<C, R/binary>>=RInp, StrList, CWord, CLine, Lines)
-    when C =:= $}
-    ->
+  when C =:= $} ->
         case CWord of
             [] -> 
                 case CLine of
@@ -1038,22 +1044,18 @@ read_wscr_content(<<C, R/binary>>=RInp, StrList, CWord, CLine, Lines)
                     [lists:reverse(CWord) | CLine], Lines)
         end;
 read_wscr_content(<<C, R/binary>>, StrList, [], [], Lines)
-    when C =:= 10; C =:= 13
-    ->
+  when C =:= 10; C =:= 13 ->
         read_wscr_content(R, StrList, [],
             [], Lines);
 read_wscr_content(<<C, R/binary>>, StrList, [], CLine, Lines)
-    when C =:= 10; C =:= 13
-    ->
+  when C =:= 10; C =:= 13 ->
         read_wscr_content(R, StrList, [],
             [], [lists:reverse(CLine) | Lines]);
 read_wscr_content(<<C, _/binary>>=RInp, StrList, CWord, CLine, Lines)
-    when C =:= 10; C =:= 13
-    ->
+  when C =:= 10; C =:= 13 ->
         read_wscr_content(RInp, StrList, [],
             [lists:reverse(CWord) | CLine], Lines);
-read_wscr_content(<<C, R/binary>>, StrList, CWord, CLine, Lines)
-    ->
+read_wscr_content(<<C, R/binary>>, StrList, CWord, CLine, Lines) ->
         read_wscr_content(R, StrList, [C | CWord], CLine, Lines).
 
 read_wscr_string(R) -> read_wscr_string(R, []).
@@ -1066,23 +1068,20 @@ read_wscr_string(<<C, R/binary>>, Str) ->
 
 read_wscr_string_locale(R) -> read_wscr_string_locale(R, 1, [], []).
 read_wscr_string_locale(<<C, R/binary>>, 1, Digits, Str)
-    when C >= $0, C =< $9
-    ->
+  when C >= $0, C =< $9 ->
     read_wscr_string_locale(R, 1, [C | Digits], Str);
 read_wscr_string_locale(<<C, R/binary>>, 2, Digits, _)
-    when C =:= 34
-    ->
+  when C =:= 34 ->
     {Str, R_1} = read_wscr_string(R),
     read_wscr_string_locale(R_1, 2, Digits, Str);
 read_wscr_string_locale(<<C, R/binary>>, N, Digits, Str)
-    when C =:= $, ->
+  when C =:= $, ->
     read_wscr_string_locale(R, N+1, Digits, Str);
 read_wscr_string_locale(<<C, R/binary>>, N, Digits, Str)
-    when C =:= 32; C =:= 9; C =:= 10; C =:= 13 ->
+  when C =:= 32; C =:= 9; C =:= 10; C =:= 13 ->
     read_wscr_string_locale(R, N, Digits, Str);
 read_wscr_string_locale(<<C, R/binary>>, 2, Digits, Str)
-    when C >= 41  %% Closing parenthesis
-    ->
+  when C >= 41 -> %% Closing parenthesis
     case string:to_integer(lists:reverse(Digits)) of
         {error, _} -> LocStrID = 0;
         {LocStrID, []} -> LocStrID
@@ -1169,7 +1168,7 @@ dlg_script_preference_do_init(Config, Defaults) ->
         {?__(4,"Commands"), fun dlg_script_preference_do_init_page2com/3},
         {?__(5,"Import / Export"), fun dlg_script_preference_do_init_page2/3},
         {?__(6,"Interpreters"), fun dlg_script_preference_do_init_page3/3},
-        {?__(8,"Custom"), fun dlg_script_preference_do_init_page5/3}
+        {?__(8,"Debug"), fun dlg_script_preference_do_init_page5/3}
     ]]) ++ [{setting_enable, ChkEnableScripts}],
     
     {_Btnokay, _BtnCancel} = dlg_button_bar({Frameparts, Frameparts_sizer}, F, ?__(9,"OK"), ?__(10,"Cancel")),
@@ -1316,27 +1315,18 @@ dlg_script_preference_do_init_page3(FF, Config, Defaults) ->
     PathScmArguments = dlg_text_line(FF,
         dlg_script_pref_value(setting_scm_arguments, Config, Defaults)),
     dlg_spacer(FF, 3),
-    
     [{setting_py_int_path, PathPyInt},
      {setting_scm_int_path, PathScmInt},
      {setting_scm_arguments, PathScmArguments}].
 
 
-
 dlg_script_preference_do_init_page5(FF, Config, Defaults) ->
-    dlg_label_line(FF, ?__(4,"Custom 1 File Extension:")),
-    PathCustom1Type = dlg_text_line(FF,
-        dlg_script_pref_value(setting_custom1_type, Config, Defaults)),
-    dlg_label_line(FF, ?__(5,"Custom 1 Interpreter Path:")),
-    PathCustom1Int = dlg_text_line(FF,
-        dlg_script_pref_value(setting_custom1_int_path, Config, Defaults)),
-    dlg_label_line(FF, ?__(6,"Custom 1 Init File:")),
-    PathCustom1InitFile = dlg_text_line(FF,
-        dlg_script_pref_value(setting_custom1_init_file, Config, Defaults)),
     
-    [{setting_custom1_type, PathCustom1Type},
-     {setting_custom1_int_path, PathCustom1Int},
-     {setting_custom1_init_file, PathCustom1InitFile}].
+    ChkEnableShowTuple = dlg_check_box(FF, ?__(4,"Enable Debug Return Data"),
+        dlg_script_pref_value(setting_show_tuple, Config, Defaults)),
+    dlg_spacer(FF, 3),
+	
+    [{setting_show_tuple, ChkEnableShowTuple}].
 
 
 
@@ -1363,9 +1353,9 @@ prepare_more_parameters_r({string, A1}) when is_binary(A1) -> {string, A1};
 prepare_more_parameters_r({atom, A1}) when is_binary(A1) -> {atom, A1};
 prepare_more_parameters_r(A1) when is_binary(A1) -> {string, A1};
 prepare_more_parameters_r(Tuple)
-    when is_tuple(Tuple), is_atom(element(1, Tuple)),
-        element(1, Tuple) =/= atom,
-        element(1, Tuple) =/= string ->
+  when is_tuple(Tuple), is_atom(element(1, Tuple)),
+       element(1, Tuple) =/= atom,
+       element(1, Tuple) =/= string ->
     [FrontAtom | List2] = tuple_to_list(Tuple),
     [   {atom, binstr(atom_to_list(FrontAtom))} |
         lists:map(fun(A1) -> prepare_more_parameters_r(A1) end, List2)];
@@ -1383,7 +1373,7 @@ prepare_more_parameters_r(A1) -> A1.
 write_scm(A) -> ?DEBUG_FMT("write_scm -> ~p~n~n", [A]),
     write_scm(A, [<<"(">>], false).
 write_scm([], BList, _) ->
-    lists:reverse([")"|BList]);
+    lists:reverse([<<")">>|BList]);
 write_scm(AList, BList, true) ->
     write_scm(AList, [<<" ">> | BList], false);
 write_scm([{atom, A} | AList], BList, false) ->
@@ -1395,30 +1385,31 @@ write_scm([{string, A} | AList], BList, false) ->
     A_2 = binstr(string:replace(A_1, "\"", "\\\"", all)),
     write_scm(AList, [<<"\"", A_2/binary, "\"">> | BList], true);
 write_scm([{X, Y} | AList], BList, false)
-    when is_number(X), is_number(Y) -> %% coordinate
-    write_scm(AList, [io_lib:format("#(~w ~w)", [X, Y]) | BList], true);
+  when is_number(X), is_number(Y) -> %% coordinate
+    TS = iolist_to_binary(io_lib:format("#(~w ~w)", [X, Y])),
+    write_scm(AList, [TS | BList], true);
 write_scm([{X, Y} | AList], BList, false)
-    when is_list(X), is_list(Y); 
-         is_tuple(X), is_tuple(Y);
-         is_number(X), is_atom(Y);
-         is_number(X), is_tuple(Y);   %% orddict element
-         is_number(X), is_list(Y)     %% orddict element
-    ->
+  when is_list(X), is_list(Y); 
+       is_tuple(X), is_tuple(Y);
+       is_number(X), is_atom(Y);
+       is_number(X), is_tuple(Y);   %% orddict element
+       is_number(X), is_list(Y) ->  %% orddict element
     [_ | X_1] = lists:reverse(write_scm([X], [], false)),
     [_ | Y_1] = lists:reverse(write_scm([Y], [], false)),
-    Args = [")"] ++ Y_1 ++ [" "] ++ X_1,
-    write_scm(AList, Args ++ [ "#(" | BList], true);
+    Args = [<<")">> | Y_1] ++ [<<" ">> | X_1],
+    write_scm(AList, [lists:reverse(Args), <<"#(">> | BList], true);
 write_scm([{X, Y, Z} | AList], BList, false)
-    when is_number(X), is_number(Y), is_number(Z) ->
-    write_scm(AList, [io_lib:format("#(~w ~w ~w)", [X, Y, Z]) | BList], true);
+  when is_number(X), is_number(Y), is_number(Z) ->
+    TS = iolist_to_binary(io_lib:format("#(~w ~w ~w)", [X, Y, Z])),
+    write_scm(AList, [TS | BList], true);
 write_scm([{X, Y, Z} | AList], BList, false)
-    when is_list(X), is_list(Y), is_list(Z);
-         is_tuple(X), is_tuple(Y), is_tuple(Z) ->
+  when is_list(X), is_list(Y), is_list(Z);
+       is_tuple(X), is_tuple(Y), is_tuple(Z) ->
     [_ | X_1] = lists:reverse(write_scm([X], [], false)),
     [_ | Y_1] = lists:reverse(write_scm([Y], [], false)),
     [_ | Z_1] = lists:reverse(write_scm([Z], [], false)),
-    Args = [")"] ++ Z_1 ++ [" "] ++ Y_1 ++ [" "] ++ X_1,
-    write_scm(AList, Args ++ [ "#(" | BList], true);
+    Args = [<<")">> | Z_1] ++ [<<" ">> | Y_1] ++ [<<" ">> | X_1],
+    write_scm(AList, [lists:reverse(Args), <<"#(">> | BList], true);
 write_scm([BigTuple | AList], BList, false) when is_tuple(BigTuple) ->
     A_1 = write_scm_tuple(tuple_to_list(BigTuple)),
     write_scm(AList, [A_1 | BList], true);
@@ -1478,13 +1469,13 @@ scm_parse(<<C, R/binary>>=RInp, List, Tok) when C =:= $) ->
             scm_parse(RInp, [bare_word(Tok) | List], [])
     end;
 scm_parse(<<C, R/binary>>=RInp, List, Tok)
-    when C =:= 32; C =:= 9; C =:= 10; C =:= 13 ->
+  when C =:= 32; C =:= 9; C =:= 10; C =:= 13 ->
     case Tok of
         [] -> scm_parse(R, List, []);
         _  -> scm_parse(RInp, [bare_word(Tok) | List], [])
     end;
 scm_parse(<<C, _/binary>>=Num_S, List, [])
-    when C >= $0, C =< $9; C =:= $.; C =:= $- ->
+  when C >= $0, C =< $9; C =:= $.; C =:= $- ->
         {Num, RInp} = scm_parse_num(Num_S),
         scm_parse(RInp, [Num | List], []);
 scm_parse(<<C, R/binary>>, List, Tok) ->
@@ -1493,7 +1484,7 @@ scm_parse(<<C, R/binary>>, List, Tok) ->
 
 scm_parse_num(A) -> scm_parse_num(A, []).
 scm_parse_num(<<C, _/binary>>=R, Num_S0)
-    when C =:= 32; C =:= 9; C =:= $) ->
+  when C =:= 32; C =:= 9; C =:= $) ->
         Num_S = lists:reverse(Num_S0),
         case string:to_float(Num_S) of
             {error, _} ->
@@ -1615,8 +1606,7 @@ get_wscr_import_export_params(Cont_0) ->
 
         
 fill_extra_file_inputs(ExtraFileChoosers, #command_rec{extrafileinputs=ExtraFiles}=CommandRec, _St, F)
-    when length(ExtraFileChoosers) > length(ExtraFiles)
-->
+  when length(ExtraFileChoosers) > length(ExtraFiles) ->
     {FileVarName, ChooserPs} = lists:nth(length(ExtraFiles)+1, ExtraFileChoosers),
     Title = proplists:get_value(title, ChooserPs, ?__(1, "Choose File")),
     Exts  = proplists:get_value(exts,  ChooserPs, []),
@@ -1630,14 +1620,12 @@ fill_extra_file_inputs(ExtraFileChoosers, #command_rec{extrafileinputs=ExtraFile
             end)
     end;
 fill_extra_file_inputs(ExtraFileChoosers, #command_rec{extrafileinputs=ExtraFiles}=_CommandRec, _St, _F)
-    when length(ExtraFileChoosers) =:= length(ExtraFiles)
-->
+  when length(ExtraFileChoosers) =:= length(ExtraFiles) ->
     {file_inputs, ExtraFiles}.
 
 
 fill_extra_files(ExtraFileChoosers, #command_rec{extrafileinputs=ExtraFiles}=_CommandRec)
-    when length(ExtraFileChoosers) =:= length(ExtraFiles)
-->
+  when length(ExtraFileChoosers) =:= length(ExtraFiles) ->
     {file_inputs, ExtraFiles}.
 
 to_dialog_params(List, State, Dict) ->
@@ -1816,18 +1804,17 @@ command_extra_params([selected | R], #we{vp=_Vtab}=We0, EP, MC) ->
     command_extra_params(R, We0, [P | EP], MC);
 
 command_extra_params([faces | R], #we{fs=Ftab}=We0, EP, MC) ->
-	FL = gb_trees:keys(Ftab),
+    FL = gb_trees:keys(Ftab),
     Colors = [{FIdx, bool_none(wings_va:face_attr(color, FIdx, We0))} || FIdx <- FL],
     UVs = [{FIdx, bool_none(wings_va:face_attr(uv, FIdx, We0))} || FIdx <- FL],
-	Faces = [{FIdx, {
-		wings_face:vertices_ccw(FIdx, We0),
-		%wings_face:to_vertices([FIdx], We0),
-		bool_none(wings_va:face_attr(color, FIdx, We0)),
-		bool_none(wings_va:face_attr(uv, FIdx, We0))
-	}} || FIdx <- FL],
+    Faces = [{FIdx, {
+        wings_face:vertices_ccw(FIdx, We0),
+        bool_none(wings_va:face_attr(color, FIdx, We0)),
+        bool_none(wings_va:face_attr(uv, FIdx, We0))
+    }} || FIdx <- FL],
     P = [<<"faces">>, Faces],
     command_extra_params(R, We0, [P | EP],
-		[{face_uvs, UVs}, {face_colors, Colors} | MC]);
+        [{face_uvs, UVs}, {face_colors, Colors} | MC]);
 command_extra_params([face_colors | R], #we{fs=Ftab}=We0, EP, MC) ->
     FL = gb_trees:keys(Ftab),
     Colors = [{FIdx, bool_none(wings_va:face_attr(color, FIdx, We0))} || FIdx <- FL],
@@ -2009,9 +1996,8 @@ import_export_from_script(import, ScriptParams, #command_rec{wscrcont=WSCRConten
         ReturnBack -> ReturnBack
     end;
 import_export_from_script(Op, ScriptParams, #command_rec{wscrcont=WSCRContent,
-    scrfile=ScriptFileName,scrtype=ScriptType}=CommandRec, St)
-    when Op =:= export; Op =:= export_selected
-->
+  scrfile=ScriptFileName,scrtype=ScriptType}=CommandRec, St)
+  when Op =:= export; Op =:= export_selected ->
     case fill_extra_file_inputs(find_extra_file_sections(WSCRContent), CommandRec, St, fun (CommandRec_1) ->
             {file, {Op, {import_export_from_script, {CommandRec_1, ScriptParams}}}}
     end) of
@@ -2231,7 +2217,7 @@ e3df_from_script_image_1(bytes, #e3d_image{image=TempFile_0}=T, TempFolder) ->
                     {no_temp, T_1}
             end;
         _ ->
-            io:format("Filename not found: ~p~n", [TempFile_1]),
+            io:format("~p: Filename not found: ~p~n", [?MODULE, TempFile_1]),
             error(e3d_image_raw_filename_not_found)
     end;
 e3df_from_script_image_1(Conv, #e3d_image{filename=TempFile_1}=T, _TempFolder) ->
@@ -2240,7 +2226,7 @@ e3df_from_script_image_1(Conv, #e3d_image{filename=TempFile_1}=T, _TempFolder) -
             T_1 = e3df_from_script_image_conv(Conv, T, TempFile_1),
             {no_temp, T_1};
         _ ->
-            io:format("Filename not found: ~p~n", [TempFile_1]),
+            io:format("~p: Filename not found: ~p~n", [?MODULE, TempFile_1]),
             error(e3d_image_filename_not_found)
     end.
 
@@ -2337,10 +2323,7 @@ get_settings_for_run_script() ->
 [
     {setting_py_int_path, wpa:pref_get(?MODULE, setting_py_int_path, "python")},
     {setting_scm_int_path, wpa:pref_get(?MODULE, setting_scm_int_path, "csi")},
-    {setting_scm_arguments, wpa:pref_get(?MODULE, setting_scm_arguments, "-q -n -b")},
-    {setting_custom1_int_path, wpa:pref_get(?MODULE, setting_custom1_int_path, none)},
-    {setting_custom1_arguments, wpa:pref_get(?MODULE, setting_custom1_arguments, none)},
-    {setting_custom1_init_file, wpa:pref_get(?MODULE, setting_custom1_init_file, none)}
+    {setting_scm_arguments, wpa:pref_get(?MODULE, setting_scm_arguments, "-q -n -b")}
 ].
 
 
@@ -2417,9 +2400,9 @@ crun("ifndef", [PV, OtherCode], State, Dict) ->
     end;
 
 crun("if", [PV1, Op, PV2, OtherCode], State, Dict)
-    when Op =:= "eq" ; Op =:= "ne" ;
-         Op =:= "gt" ; Op =:= "lt" ;
-         Op =:= "ge" ; Op =:= "le" ->
+  when Op =:= "eq" ; Op =:= "ne" ;
+       Op =:= "gt" ; Op =:= "lt" ;
+       Op =:= "ge" ; Op =:= "le" ->
     {PV1Res, State_1} = crun_pv(PV1, State, Dict),
     {PV2Res, State_2} = crun_pv(PV2, State_1, Dict),
     case case Op of
@@ -3162,14 +3145,14 @@ etp_tok([], [], O) ->
 etp_tok([], WO, O) ->
     etp_tok([], [], [etp_word_or_number(WO) | O]);
 etp_tok([$. | Rest], [Alph | _] = WO, O)
-    when Alph >= $a andalso Alph =< $z ->
+  when Alph >= $a andalso Alph =< $z ->
     %% Tuple record find
     etp_tok(Rest, [], [dot, etp_word_or_number(WO) | O]);
 etp_tok([$. | Rest], [], O) ->
     %% Tuple record find
     etp_tok(Rest, [], [dot | O]);
 etp_tok([Digit | Rest], [], [dot | O])
-    when Digit >= $0 andalso Digit =< $9 ->
+  when Digit >= $0 andalso Digit =< $9 ->
     %% Revert dot from tuple record to number
     etp_tok(Rest, [Digit,$.], O);
 etp_tok([$/ | Rest], [], O) ->
@@ -3224,7 +3207,7 @@ etp_tok([$, | Rest], [], O) ->
     etp_tok(Rest, [], [cma | O]);
     
 etp_tok([X | _]=Str, WO, O)
-    when length(WO) > 0,
+  when length(WO) > 0,
         (X =:= $/ orelse
          X =:= ${ orelse X =:= $} orelse
          X =:= $[ orelse X =:= $] orelse

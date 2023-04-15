@@ -10,7 +10,6 @@
 ;;     $Id$
 ;;
 
-
 (define (relative_path_from_absolute Path1 Path2)
 	(define (split_components Path)
 		(define Path_1 (list->string (map (lambda (C) (if (eq? C #\\) #\/ C)) (string->list Path))))
@@ -50,4 +49,9 @@
 ;; Gauche scheme does a flush automatically after newline
 (define (**flush-out)
 	(begin))
+
+(define (**add-to-load-path p)
+	;; We only need run-time modification of the load-path variable
+	(set! *load-path* (cons p *load-path*))
+	)
 
