@@ -17,7 +17,7 @@ include ../../erl.mk
 
 ESRC=.
 WINGS_INTL=../../intl_tools
-EBIN=../../plugins/primitives
+EBIN=../../plugins/color_tools
 WINGS_TOP=../../..
 WINGS_E3D=../../e3d
 
