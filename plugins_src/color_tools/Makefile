@@ -1,25 +1,25 @@
 #
 #  Makefile --
 #
-#     Makefile for building the plug-ins.
+#     Makefile for building color tool plug-ins.
 #
 #  Copyright (c) 2001-2013 Bjorn Gustavsson
 #
 #  See the file "license.terms" for information on usage and redistribution
 #  of this file, and for a DISCLAIMER OF ALL WARRANTIES.
 #
-#     $Id: Makefile,v 1.20 2006/01/19 22:30:47 giniu Exp $
+#     $Id: Makefile,v 1.14 2006/08/02 22:44:40 antoneos Exp $
 #
-
-include ../erl.mk
+include ../../erl.mk
 
 .SUFFIXES: .erl .jam .beam .yrl .xrl .bin .mib .hrl .sgml .html .ps .3 .1 \
 	.fig .dvi .tex .class .java .pdf .psframe .pscrop
 
 ESRC=.
-WINGS_INTL=../intl_tools
-EBIN=../plugins/default
-WINGS_TOP=../..
+WINGS_INTL=../../intl_tools
+EBIN=../../plugins/primitives
+WINGS_TOP=../../..
+WINGS_E3D=../../e3d
 
 ifeq ($(TYPE),debug)
 TYPE_FLAGS=-DDEBUG
@@ -28,14 +28,14 @@ TYPE_FLAGS=
 endif
 
 MODULES= \
-	wp9_dialogs
+	wpc_color_panel
 
 TARGET_FILES= $(MODULES:%=$(EBIN)/%.beam)
 
 # ----------------------------------------------------
 # FLAGS
 # ----------------------------------------------------
-ERL_COMPILE_FLAGS += -Werror $(TYPE_FLAGS) +debug_info -pa $(WINGS_INTL) -I $(WINGS_TOP)
+ERL_COMPILE_FLAGS += -Werror -I $(WINGS_TOP) $(TYPE_FLAGS) -pa $(WINGS_INTL) +debug_info
 
 # ----------------------------------------------------
 # Targets
@@ -44,37 +44,19 @@ ERL_COMPILE_FLAGS += -Werror $(TYPE_FLAGS) +debug_info -pa $(WINGS_INTL) -I $(WI
 opt debug:
 	$(MAKE) TYPE=$@ common
 
-common: $(TARGET_FILES) subdirs
-
-subdirs:
-	(cd import_export; $(MAKE))
-	(cd primitives; $(MAKE))
-	(cd commands; $(MAKE))
-	(cd autouv; $(MAKE))
-	(cd color_tools; $(MAKE))
-
 template: opt
 	$(ERL) -pa $(WINGS_INTL) -noinput -run tools generate_template_files $(EBIN)
 
-lang: subdirs_lang template
+lang: template
 	cp *.lang $(EBIN)
 	$(ERL) -pa $(WINGS_INTL) -noinput -run tools diff_lang_files $(EBIN)
 
-subdirs_lang:
-	(cd import_export; $(MAKE) lang)
-	(cd primitives; $(MAKE) lang)
-	(cd commands; $(MAKE) lang)
-	(cd autouv; $(MAKE) lang)
+common: $(TARGET_FILES)
 
-clean: subdirs_clean
+clean:
 	rm -f $(TARGET_FILES)
 	rm -f core
 
-subdirs_clean:
-	(cd import_export; $(MAKE) clean)
-	(cd primitives; $(MAKE) clean)
-	(cd commands; $(MAKE) clean)
-	(cd autouv; $(MAKE) clean)
-
 $(EBIN)/%.beam: $(ESRC)/%.erl
 	$(ERLC) $(ERL_COMPILE_FLAGS) -o$(EBIN) $<
+
