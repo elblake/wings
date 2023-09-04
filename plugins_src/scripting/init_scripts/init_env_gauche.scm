@@ -10,6 +10,8 @@
 ;;     $Id$
 ;;
 
+(use gauche.threads)
+
 (define (relative_path_from_absolute Path1 Path2)
 	(define (split_components Path)
 		(define Path_1 (list->string (map (lambda (C) (if (eq? C #\\) #\/ C)) (string->list Path))))
