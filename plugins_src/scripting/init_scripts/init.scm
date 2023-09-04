@@ -181,6 +181,94 @@
 	(let ((reply (read)))
 	  reply)
 	)
+(define (wings-pb-message . Args)
+	(define A1 (car Args))
+	(define A2 (cdr Args))
+	(cond
+		((eq? A2 '())
+			(wings-pb-message-1 A1))
+		(#t
+			(wings-pb-message-2 A1 (car A2)))))
+
+(define (wings-pb-message-2 Prc Str)
+	(newline (current-error-port))
+	(write (list '%pbmessage Prc Str) (current-error-port))
+	(newline (current-error-port))
+	(**flush-out))
+
+(define (wings-pb-message-1 Str)
+	(newline (current-error-port))
+	(write (list '%pbmessage 1.0 Str) (current-error-port))
+	(newline (current-error-port))
+	(**flush-out))
+
+
+
+
+(define (wings-result-text List)
+	(if (string? List)
+		(wings-result-text (list List))
+		(begin
+			(newline)
+			(write (list '%resulttext List))
+			(newline)))
+	)
+
+
+;; Long running process
+;;
+;; Example:
+;; 
+;; (display "Started")(newline)
+;; (long-running-process
+;; 	(lambda ()
+;; 		(let loop ((N 100000000))
+;; 			(if (> N 0)
+;; 				(loop (- N 1))
+;; 				'ok))
+;; 	))
+;; (display "Done")(newline)
+;; 
+
+(define (long-running-process Fun)
+	;; A thread that simply sends keep-alive messages back to the scripting
+	;; plugin to keep it from timing out while the script processes something
+	;; that takes a while.
+	;;
+	(define StandbyState #f)
+	(define StandbySema  (make-semaphore 1))
+	(define StandbyThread
+		(make-thread (^[] (guard (e [else (report-error e) #f])
+			(define (get_val)
+				(semaphore-acquire! StandbySema)
+				(let ((Val (if StandbyState #t #f)))
+					(semaphore-release! StandbySema)
+					Val))
+			(let loop ()
+				(if (get_val)
+					'done
+					(let ()
+						;; The standard output seems to have some sort of buffering
+						;; that prevents it from sending from this thread, current
+						;; workaround is sending to standard error to bypass the buffering
+						(newline (current-error-port))
+						(write (list '%keepalive 0) (current-error-port))
+						(newline (current-error-port))
+						(**flush-out)
+						(thread-sleep! 1)
+						(loop))))
+		))))
+
+	(thread-start! StandbyThread)
+	(unwind-protect (Fun)
+		(semaphore-acquire! StandbySema)
+		(set! StandbyState #t)
+		(semaphore-release! StandbySema)
+		(thread-join! StandbyThread)
+		)
+	)
+
+
 
 (define cmd (read))
 (if (eq? (list-ref cmd 0) 'run)

@@ -116,11 +116,7 @@ help_script_menu(0, Menu) ->
         {?__(2,"Scripting Information"),script_basics,
               ?__(2,"Scripting Information")},
         {?__(3,"WSCR Resource File Guide (PDF)"),wscr_guide,
-              ?__(3,"WSCR Resource File Guide (PDF)")},
-        {?__(4,"Scripting with Scheme (PDF)"),using_scheme,
-              ?__(4,"Scripting with Scheme (PDF)")},
-        {?__(5,"Scripting with Python (PDF)"),using_python,
-              ?__(5,"Scripting with Python (PDF)")}
+              ?__(3,"WSCR Resource File Guide (PDF)")}
        ]}}] ++ Menu;
 help_script_menu(_, []) -> []; %% This shouldn't happen.
 help_script_menu(N, [Item | Menu]) when Item =/= separator, N > 0 ->
@@ -261,16 +257,14 @@ pdf_filename(Which) ->
     %% can be used for other languages.
     %%
     case Which of
-        wscr_guide   -> ?__(1, "WSCRGuide_en.pdf");
-        using_scheme -> ?__(2, "SchemeScriptGuide_en.pdf");
-        using_python -> ?__(3, "PythonScriptGuide_en.pdf")
+        wscr_guide   -> ?__(1, "WSCRGuide_en.pdf")
     end.
 
 path_for_cmd(win, FullPath_1) ->
     FullPath_2 = lists:flatten(string:replace(FullPath_1, "/", "\\", all)),
     FullPath_3 = lists:flatten(string:replace(FullPath_2, "\"", "\"\"", all)),
     "\"" ++ FullPath_3 ++ "\"";
-path_for_cmd(nix, FullPath_1) ->
+path_for_cmd(unix, FullPath_1) ->
     FullPath_2 = lists:flatten(string:replace(FullPath_1, "\\", "\\\\", all)),
     FullPath_3 = lists:flatten(string:replace(FullPath_2, "'", "\\'", all)),
     "'" ++ FullPath_3 ++ "'".
@@ -280,13 +274,13 @@ open_pdf(PDFFile, PathOfPDF) ->
         {win32, _} ->
             PathOfPDF_1 = path_for_cmd(win, PathOfPDF),
             CmdLine = "start /D " ++ PathOfPDF_1 ++ " " ++ PDFFile ++ "";
-        {macos, _} ->
+        {unix, macos} ->
             FullPath_1 = filename:absname(PDFFile, PathOfPDF),
-            FullPath_2 = path_for_cmd(nix, FullPath_1),
+            FullPath_2 = path_for_cmd(unix, FullPath_1),
             CmdLine = "finder " ++ FullPath_2;
-        {other, _} ->
+        {unix, _} ->
             FullPath_1 = filename:absname(PDFFile, PathOfPDF),
-            FullPath_2 = path_for_cmd(nix, FullPath_1),
+            FullPath_2 = path_for_cmd(unix, FullPath_1),
             CmdLine = "xdg-open " ++ FullPath_2
     end,
     os:cmd(CmdLine).
@@ -332,36 +326,11 @@ run_script(_ScriptType, none, _ScriptParams, _MoreParams, _Settings, _) ->
                    "as the .wscr file, and 'type' matches script file type.")}.
 run_script_getting_data(CurrentReturn, QueryState, ShowTupleDebug) ->
     receive 
-        {reply, SendPID, {[[{atom, <<"%setvar">>} | _] | _]=Ret_1, _}}
+        {reply, SendPID, {[[{atom, <<"%",_/binary>>} | _] | _]=Ret_1, _}}
           when is_pid(SendPID) ->
-            case run_script_tuplefy(Ret_1) of
-                [{'%setvar', VarName, VarValue}|_] when is_list(VarName) ->
-                    QueryState_1 = etp_store_temp(binstr(VarName), VarValue, QueryState),
-                    if ShowTupleDebug =:= true ->
-                            io:format("setvar: ~s = ~w~n", [VarName, VarValue]);
-                        true -> ok
-                    end,
-                    SendPID ! {reply_to_script, {ok}};
-                _ ->
-                    QueryState_1 = QueryState,
-                    SendPID ! {reply_to_script, {error}}
-            end,
-            run_script_getting_data(CurrentReturn, QueryState_1, ShowTupleDebug);
-        {reply, SendPID, {[[{atom, <<"%query">>} | _] | _]=Ret_1, _}}
-          when is_pid(SendPID) ->
-            case run_script_tuplefy(Ret_1) of
-                [{'%query', QueryStr}|_] when is_list(QueryStr) ->
-                    {QueryRes, QueryState_1} = crun_pv(QueryStr, QueryState, []),
-                    if ShowTupleDebug =:= true ->
-                            io:format("query: ~s -> ~p~n", [QueryStr, QueryRes]);
-                        true -> ok
-                    end,
-                    SendPID ! {reply_to_script, {ok, QueryRes}};
-                _ ->
-                    QueryState_1 = QueryState,
-                    SendPID ! {reply_to_script, {error}}
-            end,
-            run_script_getting_data(CurrentReturn, QueryState_1, ShowTupleDebug);
+            run_script_getting_data_special(
+                CurrentReturn, QueryState, ShowTupleDebug,
+                SendPID, Ret_1);
         {reply, SendPID, Ret}
           when is_pid(SendPID) -> 
             ?DEBUG_FMT("reply ~w~n",[Ret]),
@@ -370,6 +339,68 @@ run_script_getting_data(CurrentReturn, QueryState, ShowTupleDebug) ->
             ?DEBUG_FMT("exited~n",[]),
             CurrentReturn
     end.
+
+run_script_getting_data_special(CurrentReturn, QueryState, ShowTupleDebug, SendPID, Ret_1) ->
+    case run_script_tuplefy(Ret_1) of
+        [{'%setvar', VarName, VarValue}|_]
+          when is_list(VarName) ->
+            QueryState_1 = etp_store_temp(binstr(VarName), VarValue, QueryState),
+            if ShowTupleDebug =:= true ->
+                    io:format("setvar: ~s = ~w~n", [VarName, VarValue]);
+                true -> ok
+            end,
+            SendPID ! {reply_to_script, {ok}};
+        
+        [{'%query', QueryStr}|_]
+          when is_list(QueryStr) ->
+            {QueryRes, QueryState_1} = crun_pv(QueryStr, QueryState, []),
+            if ShowTupleDebug =:= true ->
+                    io:format("query: ~s -> ~p~n", [QueryStr, QueryRes]);
+                true -> ok
+            end,
+            SendPID ! {reply_to_script, {ok, QueryRes}};
+        
+        %% An intermittent message sent to prevent the scripting plugin from
+        %% timing out.
+        [{'%keepalive', _Number}|_] ->
+            QueryState_1 = QueryState;
+        
+        %% Send a progress bar message to the plugin to update the user
+		%% on what the script is doing.
+        [{'%pbmessage', Percent, Str}|_]
+          when is_float(Percent), is_list(Str) ->
+			wings_pb:update(Percent, Str),
+			wings_pb:pause(),
+            QueryState_1 = QueryState;
+        
+        %% Display a panel window with a text box that shows the results of 
+        %% processing to the user. For example, a script that analyzes the
+        %% model and displays statistics.
+        [{'%resulttext', Text}|_]
+          when is_list(Text) ->
+		    info_dialog(Text),
+            QueryState_1 = QueryState;
+        [{'%resulttext', Text, OptList}|_]
+          when is_list(Text), is_list(OptList) ->
+		    info_dialog(Text),
+            QueryState_1 = QueryState;
+        
+        _ ->
+            QueryState_1 = QueryState,
+            SendPID ! {reply_to_script, {error}}
+    end,
+    run_script_getting_data(CurrentReturn, QueryState_1, ShowTupleDebug).
+
+info_dialog(List) ->
+	info_dialog("Info", List).
+info_dialog(Title, [Str|_]=List)
+  when is_list(Str) ->
+    wings_dialog:info(Title, List, []);
+info_dialog(Title, [C|_]=Str)
+  when is_integer(C) ->
+    info_dialog(Title, [Str]).
+	
+
 %%
 %% Some schemes do not like having vector arrays containing data other than
 %% strings and numbers, so if a list has a symbol as its first item,
@@ -438,8 +469,8 @@ get_script_pid(ScriptType_S, Settings) ->
                 
                 _Other ->
                     Interpreter = none,
-					Arguments = [],
-					InitFile = ""
+                    Arguments = [],
+                    InitFile = ""
             end,
             case Interpreter of
                 none ->
@@ -1104,7 +1135,7 @@ load_lang_file(WSCRFile, LangCode, Which) ->
         {ok, [{_, LangSectionList}]} ->
             case orddict:find(Which, LangSectionList) of
                 {ok, StrList} -> {ok, StrList};
-                {error, _} -> {ok, []}
+                error -> {ok, []}
             end;
         {error, _} ->
             {ok, []}
@@ -1325,7 +1356,7 @@ dlg_script_preference_do_init_page5(FF, Config, Defaults) ->
     ChkEnableShowTuple = dlg_check_box(FF, ?__(4,"Enable Debug Return Data"),
         dlg_script_pref_value(setting_show_tuple, Config, Defaults)),
     dlg_spacer(FF, 3),
-	
+    
     [{setting_show_tuple, ChkEnableShowTuple}].
 
 
@@ -1987,11 +2018,7 @@ import_export_from_script(import, ScriptParams, #command_rec{wscrcont=WSCRConten
                                 end;
                             {error, Err} -> {error, Err}
                         end
-                    end, St);
-                _ ->
-                    io:format("~s", [import_export_extensions_needed_msg()]),
-                    %% There should be an extension returned.
-                    keep
+                    end, St)
             end;
         ReturnBack -> ReturnBack
     end;
@@ -2044,11 +2071,7 @@ import_export_from_script(Op, ScriptParams, #command_rec{wscrcont=WSCRContent,
                                 delete_temps(TempFolder, TempFiles),
                                 {error, Err}
                         end
-                    end, St);
-                _ ->
-                    io:format("~s", [import_export_extensions_needed_msg()]),
-                    %% There should be an extension returned.
-                    keep
+                    end, St)
             end;
         ReturnBack -> ReturnBack
     end.
@@ -2093,10 +2116,6 @@ export_transform_1(E3dFile, KeyVals) ->
     Mat = wpa:export_matrix(KeyVals),
     e3d_file:transform(E3dFile, Mat).
 
-import_export_extensions_needed_msg() ->
-    ?__(1,"NOTE: No extensions found in the script .wscr file. There should be "
-          "an extensions list, with each line in the list of the form: "
-          "ext \".ext\" \"File Type Name\"").
 
 mesh_export_changes(#e3d_file{objs=O}=E3DCont, Props) ->
     case proplists:get_value(include_normals, Props, false) of
@@ -2614,7 +2633,7 @@ etp_get_term({word,Word}, _State, _Dict) ->
 etp_get_term([{start,_}]=C, State, Dict) ->
     case etp_run(C, State, Dict) of
         {Ret, State_1} when is_binary(Ret) ->
-            {list_to_atom(Ret), State_1};
+            {list_to_atom(binary_to_list(Ret)), State_1};
         {Ret, State_1} when is_atom(Ret) ->
             {Ret, State_1}
     end.

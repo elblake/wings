@@ -17,6 +17,8 @@
 ##
 
 import sys
+import threading
+import time
 
 def t_1():
 	scm_parse("(test '(0 1 2 3) #(2 3 4 5) '(\"Test\" 2 #f))")
@@ -231,4 +233,53 @@ class OutputList:
 				ost.write("#")
 				self.lst_cont[i].write_list_out(ost)
 		ost.write(")")
+
+
+## Long running process
+##
+## Example:
+## 
+## class Examp:
+## 	def run(self):
+## 		sum = 0
+## 		for i in range(0, 100000000):
+## 			sum = sum + i
+## 
+## print("Begin")
+## lrp = LongRunningProcess()
+## lrp.run(Examp())
+## print("Done")
+## 
+
+def lrp_standby_function(lro):
+	while True:
+		lro.standbySema.acquire()
+		v = lro.standbyState
+		lro.standbySema.release()
+		if v:
+			break
+		print("('%keepalive 0)")
+		time.sleep(1)
+
+## A thread that simply sends keep-alive messages back to the scripting
+## plugin to keep it from timing out while the script processes something
+## that takes a while.
+##
+class LongRunningProcess:
+	def __init__(self):
+		self.standbyState = False
+		self.standbySema = threading.Semaphore()
+		self.standbyThread = threading.Thread(target=lrp_standby_function, args=(self,))
+
+	def run(self, runo):
+		self.standbyThread.start()
+		## Try is needed or main thread will close on an error but leaves
+		## the standby thread running.
+		try:
+			runo.run()
+		finally:
+			self.standbySema.acquire()
+			self.standbyState = True
+			self.standbySema.release()
+			self.standbyThread.join()
 
