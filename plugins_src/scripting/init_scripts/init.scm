@@ -1,6 +1,6 @@
 
 ;;
-;;  Scripting for Shapes  (Scheme and Python)
+;;  Scripting for Shapes  (init for Scheme)
 ;;
 ;;  Copyright 2023 Edward Blake
 ;;
@@ -15,6 +15,12 @@
 ;; and then load the actual script. The actual script is sent by the erlang
 ;; plugin as a symbolic expression through standard input.
 ;;
+
+;; Main function of script, can be called multiple times
+;;
+(define *scr-main-fun* #f)
+(define (main-function a)
+	(set! *scr-main-fun* a))
 
 ;; The full path of the script being run
 (define *script-full-path* "")
@@ -34,6 +40,26 @@
 ;; for exporter plugins, parameters set with "script_params"
 ;; also show up in here).
 (define *extra-params* '())
+
+
+(define **scr-langstrs '())
+
+(define (set-lang-string List)
+	(set! **scr-langstrs
+		(map (lambda (A)
+				(cons (vector-ref A 0)
+					  (vector-ref A 1)) )
+			List))
+	)
+
+
+(define (?__ Id Str)
+	(define Found (assq Id **scr-langstrs))
+	(if (eq? Found #f)
+		Str
+		(cdr Found))
+	)
+
 
 ;; Used by the constructors for E3D objects
 ;;
@@ -155,6 +181,19 @@
 	)
 
 
+(define (**send-back-list l)
+	(newline)
+	(write l)
+	(newline)
+	(**flush-out))
+
+(define (**send-back-list-ep l)
+	(newline (current-error-port))
+	(write l (current-error-port))
+	(newline (current-error-port))
+	(**flush-out))
+	
+
 (define (**loader-get-script-directory path)
 	;; Assuming only R5RS available, we need a function
 	;; to get the directory.
@@ -166,18 +205,12 @@
 				(**loader-get-script-directory sub)))))
 
 (define (wings-set-variable! varname varval)
-	(newline)
-	(write (list '%setvar "var1" '(1 2 3 4)))
-	(newline)
-	(**flush-out)
+	(**send-back-list (list '%setvar "var1" '(1 2 3 4)))
 	(let ((reply (read)))
 	  reply)
 	)
 (define (wings-query str)
-	(newline)
-	(write (list '%query str))
-	(newline)
-	(**flush-out)
+	(**send-back-list (list '%query str))
 	(let ((reply (read)))
 	  reply)
 	)
@@ -191,27 +224,16 @@
 			(wings-pb-message-2 A1 (car A2)))))
 
 (define (wings-pb-message-2 Prc Str)
-	(newline (current-error-port))
-	(write (list '%pbmessage Prc Str) (current-error-port))
-	(newline (current-error-port))
-	(**flush-out))
+	(**send-back-list-ep (list '%pbmessage Prc Str)))
 
 (define (wings-pb-message-1 Str)
-	(newline (current-error-port))
-	(write (list '%pbmessage 1.0 Str) (current-error-port))
-	(newline (current-error-port))
-	(**flush-out))
-
-
-
+	(**send-back-list-ep (list '%pbmessage 1.0 Str)))
 
 (define (wings-result-text List)
 	(if (string? List)
 		(wings-result-text (list List))
-		(begin
-			(newline)
-			(write (list '%resulttext List))
-			(newline)))
+		(**send-back-list (list '%resulttext List))
+		)
 	)
 
 
@@ -251,10 +273,7 @@
 						;; The standard output seems to have some sort of buffering
 						;; that prevents it from sending from this thread, current
 						;; workaround is sending to standard error to bypass the buffering
-						(newline (current-error-port))
-						(write (list '%keepalive 0) (current-error-port))
-						(newline (current-error-port))
-						(**flush-out)
+						(**send-back-list-ep (list '%keepalive 0))
 						(thread-sleep! 1)
 						(loop))))
 		))))
@@ -269,21 +288,41 @@
 	)
 
 
+(define (script-loop)
+	(define cmd (read))
+	(case (list-ref cmd 0)
+		((run_init)
+			(begin
+				(set! *script-full-path* (list-ref cmd 1))
+				(set! *script-directory* (**loader-get-script-directory *script-full-path*))
+				(**add-to-load-path *script-directory*)
+				(set-lang-string (list-ref cmd 2))
+				(begin (load *script-full-path*))
+				(if (equal? #f *scr-main-fun*)
+					(begin
+						(display "ERROR: main function not set" (current-error-port))
+						(newline (current-error-port))
+						(exit))
+					(begin
+						(**send-back-list'(ok))
+						(script-loop))))
+			)
+		((run)
+			(begin
+				(let ((params (list-ref cmd 2))
+					  (extra-params (list-ref cmd 3)))
+					(*scr-main-fun* params extra-params))
+				(newline)
+				(**flush-out)
+				(**send-back-list '(%ok))
+				(script-loop))
+			)
+		(else
+			(begin
+				(display "Not run")
+				(newline)
+				(exit))))
+	)
 
-(define cmd (read))
-(if (eq? (list-ref cmd 0) 'run)
-	(begin
-		(set! *script-full-path* (list-ref cmd 1))
-		(set! *script-directory* (**loader-get-script-directory *script-full-path*))
-		(set! *params* (list-ref cmd 2))
-		(set! *extra-params* (list-ref cmd 3))
-		(**add-to-load-path *script-directory*)
-		(begin (load *script-full-path*))
-		(newline)
-		(**flush-out)
-		(exit))
-	(begin
-		(display "Not run")
-		(newline)
-		(exit)))
+(script-loop)
 

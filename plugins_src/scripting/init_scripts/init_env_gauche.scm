@@ -50,7 +50,7 @@
 
 ;; Gauche scheme does a flush automatically after newline
 (define (**flush-out)
-	(begin))
+	(flush-all-ports))
 
 (define (**add-to-load-path p)
 	;; We only need run-time modification of the load-path variable
