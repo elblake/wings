@@ -129,8 +129,8 @@ help_script_menu(N, [separator | Menu]) when N > 0 ->
 mouse_choice() ->
     fun (help,_) -> {?__(1,"From Script"), [], []};
         (1,_) -> {shape, {shape_from_script, select}};
-        (2,_) -> ignore;
-        (3,_) -> ignore;
+        (2,_) -> {shape, {shape_from_script, select}};
+        (3,_) -> {shape, {shape_from_script, select}};
         (_,_) -> ignore
     end.
 
@@ -291,6 +291,23 @@ askdialog(Ask, Title, ParamList, Templates, F) ->
         lists:append([askdialog_extra(T) || T <- Templates]),
     wpa:dialog(Ask, Title, Dialog, F).
     
+askdialog_w_prev(Ask, Title, ParamList, Templates, F, St, FP) ->
+    erlang:put(scripting_shape_fun, FP),
+    Dialog = [ askdialog_e(B) || B <- ParamList ] ++
+        lists:append([askdialog_extra(T) || T <- Templates]),
+    Fun = fun({dialog_preview,Params}) ->
+                  {preview,F(Params),St};
+             (cancel) ->
+                  FP(close),
+                  erlang:erase(scripting_shape_fun),
+                  St;
+             (Params) ->
+                  erlang:put(scripting_shape_fun_close, true),
+                  {commit,F(Params),St}
+          end,
+    wings_dialog:dialog(Ask, Title, {preview, Dialog}, Fun).
+
+    
 askdialog_extra({import, Opts}) ->
     [wpa:dialog_template(?MODULE, import, Opts)];
 askdialog_extra({export, Opts}) ->
@@ -302,45 +319,134 @@ askdialog_e({Text, Number, C}) ->
     {hframe,[{label,Text},{text,Number,C}]}.
 
 
-run_script(ScriptType, ScriptFileName, ScriptParams, MoreParams, Settings, DefaultReturn)
+%% Start and run a script and get the return value
+%%
+run_script_once(ScriptType, ScriptFileName, ScriptParams, MoreParams, Settings, DefaultReturn) ->
+    case erlang:get(scripting_shape_fun) of
+        FP when is_function(FP) ->
+            Ret = FP({run, ScriptParams, MoreParams, DefaultReturn}),
+            case erlang:get(scripting_shape_fun_close) of
+                true ->
+                    FP(close),
+                    erlang:erase(scripting_shape_fun_close),
+                    erlang:erase(scripting_shape_fun);
+                _ ->
+                    ok
+            end,
+            Ret;
+        undefined ->
+            case run_script_w_preview(ScriptType, ScriptFileName, Settings) of
+                {error, Err} -> {error, Err};
+                {ok, F} when is_function(F) ->
+                    Ret = F({run, ScriptParams, MoreParams, DefaultReturn}),
+                    F(close),
+                    Ret
+            end
+    end.
+
+
+%% Start a script but return a function to run with parameters
+%%
+run_script_w_preview(ScriptType, ScriptFileName, Settings)
   when is_list(ScriptFileName) ->
-    ShowTupleDebug = wpa:pref_get(?MODULE, setting_show_tuple, false),
+    {ok, StrList} = load_lang_file(ScriptFileName, current_lang_code()),
     case get_script_pid(ScriptType, Settings) of
         {ok, PID} ->
-            PID ! {run_script, ScriptFileName, ScriptParams, MoreParams, self()},
-            case run_script_getting_data(DefaultReturn, #crun_state{}, ShowTupleDebug) of
-                error -> {error, ?__(2,"No results")};
-                keep -> {ok, keep};
-                {[Lisp], _} ->
-                    Tuplefied = run_script_tuplefy(Lisp),
-                    if ShowTupleDebug =:= true ->
-                            io:format("Tuplefied=~p~n", [Tuplefied]);
-                        true -> ok
-                    end,
-                    {ok, Tuplefied}
-            end;
-        {error, Err} -> {error, Err}
+            PID ! {load_script, ScriptFileName, StrList, self()},
+            run_script_w_preview_1(PID);
+        {error, Err} ->
+            {error, Err}
     end;
-run_script(_ScriptType, none, _ScriptParams, _MoreParams, _Settings, _) ->
+run_script_w_preview(_ScriptType, none, _Settings) ->
     {error, ?__(1, "Script file not found, check if script has the same name "
                    "as the .wscr file, and 'type' matches script file type.")}.
-run_script_getting_data(CurrentReturn, QueryState, ShowTupleDebug) ->
+
+run_script_w_preview_1(PID) ->
+    case run_script_getting_data_once() of
+        {[[{atom,<<"ok">>}|_]|_], _} ->
+            PID ! next,
+            {ok, fun
+                ({run, ScriptParams, MoreParams, DefaultReturn}) ->
+                    run_script_1(ScriptParams, MoreParams, DefaultReturn, PID);
+                (close) ->
+                    PID ! {close, self()},
+                    receive
+                        exited -> ok
+                    after 20 ->
+                        io:format("ERROR: Did not recv 'exited'~n", []),
+                        ok
+                    end
+            end};
+        Returned ->
+            io:format("ERROR: Returned to run_script_1=~p~n", [Returned]),
+            {error, {unexpected, Returned}}
+    end.
+
+
+run_script_1(ScriptParams, MoreParams, DefaultReturn, PID) ->
+    ShowTupleDebug = wpa:pref_get(?MODULE, setting_show_tuple, false),
+    PID ! {run_script, ScriptParams, MoreParams, self()},
+    case run_script_getting_data_until_ret(DefaultReturn) of
+        error -> {error, ?__(2,"No results")};
+        keep -> {ok, keep};
+        {[Lisp], _} ->
+            PID ! next,
+            Tuplefied = run_script_tuplefy(Lisp),
+            if ShowTupleDebug =:= true ->
+                    io:format("Tuplefied=~p~n", [Tuplefied]);
+                true -> ok
+            end,
+            {ok, Tuplefied}
+    end.
+
+
+run_script_getting_data_once() ->
+    ShowTupleDebug = wpa:pref_get(?MODULE, setting_show_tuple, false),
+    run_script_getting_data_once(#crun_state{}, ShowTupleDebug).
+run_script_getting_data_once(QueryState, ShowTupleDebug) ->
     receive 
         {reply, SendPID, {[[{atom, <<"%",_/binary>>} | _] | _]=Ret_1, _}}
           when is_pid(SendPID) ->
-            run_script_getting_data_special(
-                CurrentReturn, QueryState, ShowTupleDebug,
-                SendPID, Ret_1);
+            QueryState_1 = run_script_getting_data_special(
+                QueryState, ShowTupleDebug,
+                SendPID, Ret_1),
+            run_script_getting_data_once(QueryState_1, ShowTupleDebug);
         {reply, SendPID, Ret}
-          when is_pid(SendPID) -> 
+          when is_pid(SendPID) ->
             ?DEBUG_FMT("reply ~w~n",[Ret]),
-            run_script_getting_data(Ret, QueryState, ShowTupleDebug);
+            Ret;
+        exited       ->
+            error(exited)
+    end.
+
+run_script_getting_data_until_ret(CurrentReturn) ->
+    run_script_getting_data_until_exit(CurrentReturn).
+
+run_script_getting_data_until_exit(CurrentReturn) ->
+    ShowTupleDebug = wpa:pref_get(?MODULE, setting_show_tuple, false),
+    run_script_getting_data_until_exit(CurrentReturn, #crun_state{}, ShowTupleDebug).
+run_script_getting_data_until_exit(CurrentReturn, QueryState, ShowTupleDebug) ->
+    receive 
+        {reply, SendPID, {[[{atom, <<"%ok">>} | _] | _], _}}
+          when is_pid(SendPID) ->
+            ?DEBUG_FMT("Got ok return~n",[]),
+            CurrentReturn;
+        {reply, SendPID, {[[{atom, <<"%",_/binary>>} | _] | _]=Ret_1, _}}
+          when is_pid(SendPID) ->
+            QueryState_1 = run_script_getting_data_special(
+                QueryState, ShowTupleDebug,
+                SendPID, Ret_1),
+            run_script_getting_data_until_exit(CurrentReturn, QueryState_1, ShowTupleDebug);
+        {reply, SendPID, Ret}
+          when is_pid(SendPID) ->
+            ?DEBUG_FMT("reply ~w~n",[Ret]),
+            run_script_getting_data_until_exit(Ret, QueryState, ShowTupleDebug);
         exited       -> 
             ?DEBUG_FMT("exited~n",[]),
             CurrentReturn
     end.
 
-run_script_getting_data_special(CurrentReturn, QueryState, ShowTupleDebug, SendPID, Ret_1) ->
+run_script_getting_data_special(QueryState, ShowTupleDebug, SendPID, Ret_1) ->
     case run_script_tuplefy(Ret_1) of
         [{'%setvar', VarName, VarValue}|_]
           when is_list(VarName) ->
@@ -366,11 +472,11 @@ run_script_getting_data_special(CurrentReturn, QueryState, ShowTupleDebug, SendP
             QueryState_1 = QueryState;
         
         %% Send a progress bar message to the plugin to update the user
-		%% on what the script is doing.
+        %% on what the script is doing.
         [{'%pbmessage', Percent, Str}|_]
           when is_float(Percent), is_list(Str) ->
-			wings_pb:update(Percent, Str),
-			wings_pb:pause(),
+            wings_pb:update(Percent, Str),
+            wings_pb:pause(),
             QueryState_1 = QueryState;
         
         %% Display a panel window with a text box that shows the results of 
@@ -378,28 +484,28 @@ run_script_getting_data_special(CurrentReturn, QueryState, ShowTupleDebug, SendP
         %% model and displays statistics.
         [{'%resulttext', Text}|_]
           when is_list(Text) ->
-		    info_dialog(Text),
+            info_dialog(Text),
             QueryState_1 = QueryState;
         [{'%resulttext', Text, OptList}|_]
           when is_list(Text), is_list(OptList) ->
-		    info_dialog(Text),
+            info_dialog(Text),
             QueryState_1 = QueryState;
         
         _ ->
             QueryState_1 = QueryState,
             SendPID ! {reply_to_script, {error}}
     end,
-    run_script_getting_data(CurrentReturn, QueryState_1, ShowTupleDebug).
+    QueryState_1.
 
 info_dialog(List) ->
-	info_dialog("Info", List).
+    info_dialog("Info", List).
 info_dialog(Title, [Str|_]=List)
   when is_list(Str) ->
     wings_dialog:info(Title, List, []);
 info_dialog(Title, [C|_]=Str)
   when is_integer(C) ->
     info_dialog(Title, [Str]).
-	
+    
 
 %%
 %% Some schemes do not like having vector arrays containing data other than
@@ -512,27 +618,40 @@ run_script_runner(Interpreter, Arguments, InitFile) ->
     end.
 run_script_runner_loop(Port) ->
     receive
-        {run_script, Script, Params, MoreParams, RetPID} ->
+        {load_script, Script, StrList, RetPID} ->
+            send_to_scr_port(Port, [
+                {atom, "run_init"},
+                {string, Script},
+                prepare_string_pairs(StrList)], RetPID),
+            run_script_runner_inner_loop(Port, RetPID, false, []);
+        
+        {run_script, Params, MoreParams, RetPID} ->
             ?DEBUG_FMT(" *** ~p~n", [prepare_more_parameters(MoreParams)]),
-            try
-                OutP = iolist_to_binary([write_scm([
-                    {atom, "run"},
-                    {string, Script},
-                    prepare_parameter_list_for_scm(Params),
-                    prepare_more_parameters(MoreParams)]), <<"\n">>]),
-                
-                port_command(Port, OutP)
-            catch
-                _:Error ->
-                    io:format("ERROR: ~p", [Error]),
-                    RetPID ! exited,
-                    exit(error)
-            end,
-            run_script_runner_inner_loop(Port, RetPID, false, [])
-            
+            send_to_scr_port(Port, [
+                {atom, "run"},
+                {string, ""},
+                prepare_parameter_list_for_scm(Params),
+                prepare_more_parameters(MoreParams)], RetPID),
+            run_script_runner_inner_loop(Port, RetPID, false, []);
+        {close, PID} ->
+            port_close(Port),
+            PID ! exited;
+        next ->
+            run_script_runner_loop(Port);
+        M ->
+            io:format("Unexp=~p~n", [M]),
+            run_script_runner_loop(Port)
     end.
 run_script_runner_inner_loop(Port, RetPID, StartedL, LAcc) ->
     receive
+        next ->
+            %% Go back to init commands
+            run_script_runner_loop(Port);
+
+        {close, _} ->
+            port_close(Port),
+            RetPID ! exited;
+        
         {reply_to_script, Tuple} ->
             ?DEBUG_FMT("sending: ~p~n", [Tuple]),
             try
@@ -604,6 +723,18 @@ run_script_runner_inner_loop(Port, RetPID, StartedL, LAcc) ->
         port_close(Port),
         RetPID ! exited
     end.
+send_to_scr_port(Port, L, RetPID) ->
+    try
+        OutP = iolist_to_binary([write_scm(L), <<"\n">>]),
+        port_command(Port, OutP)
+    catch
+        _:Error ->
+            io:format("ERROR: ~p", [Error]),
+            RetPID ! exited,
+            exit(error)
+    end.
+
+
 
 find_first_interpreter(_AutoSetting, List) ->
     Found = find_first_interpreter_1(List),
@@ -1395,6 +1526,13 @@ prepare_more_parameters_r(List) when is_list(List) ->
 prepare_more_parameters_r(A1) when is_atom(A1) -> {atom, binstr(atom_to_list(A1))};
 prepare_more_parameters_r(A1) -> A1.
 
+
+prepare_string_pairs(StrList) ->
+    [prepare_string_pairs_1(P) || P <- StrList].
+prepare_string_pairs_1({Int, Str})
+  when is_list(Str) ->
+    {Int, {string, binstr(Str)}};
+prepare_string_pairs_1(A) -> A.
     
 
 %%
@@ -1598,13 +1736,17 @@ get_wscr_templates(Cont) ->
 
 get_wscr_params(Cont_0) ->
     Cont = wscr_to_proplist(Cont_0),
-    case orddict:find("params_title", Cont) of
-        error      -> ParamsTitle = get_wscr_params_default_param_title();
-        {ok, Val1} -> ParamsTitle = Val1
+    ParamsTitle = case orddict:find("params_title", Cont) of
+        error      -> get_wscr_params_default_param_title();
+        {ok, Val1} -> Val1
     end,
-    case orddict:find("params", Cont) of
-        error      -> ParamsLists_0 = [];
-        {ok, Val2} -> ParamsLists_0 = Val2
+    ParamsPreview = case orddict:find("params_preview", Cont) of
+        error      -> false;
+        {ok, _}    -> true
+    end,
+    ParamsLists_0 = case orddict:find("params", Cont) of
+        error      -> [];
+        {ok, Val2} -> Val2
     end,
     ParamsTplsLists = get_wscr_templates(Cont),
     ParamsLists = 
@@ -1618,7 +1760,7 @@ get_wscr_params(Cont_0) ->
                 {"???", 0}
         end, ParamsLists_0),
     
-    {ok, ParamsTitle, ParamsLists, ParamsTplsLists}.
+    {ok, ParamsTitle, ParamsPreview, ParamsLists, ParamsTplsLists}.
 
 get_wscr_import_export_params(Cont_0) ->
     Cont = wscr_to_proplist(Cont_0),
@@ -1677,7 +1819,29 @@ to_dialog_params([], _, _, OList) ->
 append_extra_files(ExtraFiles, PSScriptParams) ->
     [{K1,{string,V1}} || {K1,V1} <- ExtraFiles] ++ PSScriptParams.
 
-make_shape_from_script(Params, #command_rec{wscrcont=WSCRContent}=CommandRec, St) when is_atom(Params) ->
+
+make_shape_askdialog(
+  Params, Title, false, SettableParams, State_1, Dict, Templates,
+  CommandRec, _St) ->
+    askdialog(Params, Title,
+        to_dialog_params(SettableParams, State_1, Dict), Templates,
+        fun(Res) -> {shape,{shape_from_script, {CommandRec, Res}}} end
+        );
+make_shape_askdialog(
+  Params, Title, true, SettableParams, State_1, Dict, Templates,
+  #command_rec{scrfile=ScriptFileName,scrtype=ScriptType}=CommandRec, St) ->
+    case run_script_w_preview(ScriptType, ScriptFileName,
+        get_settings_for_run_script())
+    of {ok, FP} ->
+            askdialog_w_prev(Params, Title,
+                to_dialog_params(SettableParams, State_1, Dict), Templates,
+                fun(Res) -> {shape,{shape_from_script, {CommandRec, Res}}} end, St, FP
+                )
+    end.
+
+
+make_shape_from_script(Params, #command_rec{wscrcont=WSCRContent}=CommandRec, St)
+  when is_atom(Params) ->
     Dict = orddict:from_list([{"st", St}]),
     {_, State_1} = crun_section("params_init", WSCRContent, Dict),
     ExtraFileChoosers = find_extra_file_sections(WSCRContent),
@@ -1686,18 +1850,19 @@ make_shape_from_script(Params, #command_rec{wscrcont=WSCRContent}=CommandRec, St
     end) of
         {file_inputs, _ExtraFiles} ->
             case get_wscr_params(WSCRContent) of
-                {ok, _Title, [], []} ->
+                {ok, _Title, _, [], []} ->
                     {shape,{shape_from_script, {CommandRec, []}}};
-                {ok, Title, SettableParams, Templates}
-                    when length(SettableParams) > 0;
-                         length(Templates) > 0 ->
-                    askdialog(Params, Title,
-                        to_dialog_params(SettableParams, State_1, Dict), Templates,
-                        fun(Res) -> {shape,{shape_from_script, {CommandRec, Res}}} end)
+                {ok, Title, PrevMode, SettableParams, Templates}
+                  when length(SettableParams) > 0;
+                       length(Templates) > 0 ->
+                    make_shape_askdialog(
+                      Params, Title, PrevMode, SettableParams, State_1,
+                      Dict, Templates, CommandRec, St)
             end;
         ReturnBack -> ReturnBack
     end;
-make_shape_from_script(ScriptParams, #command_rec{wscrcont=WSCRContent,scrfile=ScriptFileName,scrtype=ScriptType}=CommandRec, St) when is_list(ScriptParams) ->
+make_shape_from_script(ScriptParams, #command_rec{wscrcont=WSCRContent,scrfile=ScriptFileName,scrtype=ScriptType}=CommandRec, St)
+  when is_list(ScriptParams) ->
     case fill_extra_files(find_extra_file_sections(WSCRContent), CommandRec) of
         {file_inputs, ExtraFiles} ->
             Dict = orddict:from_list([{"st", St}, {"params", ScriptParams}]),
@@ -1708,7 +1873,7 @@ make_shape_from_script(ScriptParams, #command_rec{wscrcont=WSCRContent,scrfile=S
             end,
             PSScriptParams_1 = [[binstr(K), V]
                 || {K, V} <- append_extra_files(ExtraFiles, PSScriptParams)],
-            case run_script(ScriptType, ScriptFileName, ScriptParams,
+            case run_script_once(ScriptType, ScriptFileName, ScriptParams,
                 PSScriptParams_1,
                 get_settings_for_run_script(), keep)
             of
@@ -1727,7 +1892,27 @@ make_shape_from_script(ScriptParams, #command_rec{wscrcont=WSCRContent,scrfile=S
     end.
 
 
-command_from_script(Op, Params, #command_rec{wscrcont=WSCRContent}=CommandRec, St) when is_atom(Params) ->
+command_askdialog(
+  Params, Title, false, SettableParams, State_1, Dict, Templates, Op,
+  CommandRec, _St) ->
+    askdialog(Params, Title,
+        to_dialog_params(SettableParams, State_1, Dict), Templates,
+        fun(Res) -> {Op,{command_from_script, {CommandRec, Res}}} end
+        );
+command_askdialog(
+  Params, Title, true, SettableParams, State_1, Dict, Templates, Op,
+  #command_rec{scrfile=ScriptFileName,scrtype=ScriptType}=CommandRec, St) ->
+    case run_script_w_preview(ScriptType, ScriptFileName,
+        get_settings_for_run_script())
+    of {ok, FP} ->
+        askdialog_w_prev(Params, Title,
+            to_dialog_params(SettableParams, State_1, Dict), Templates,
+            fun(Res) -> {Op,{command_from_script, {CommandRec, Res}}} end, St, FP
+            )
+    end.
+
+command_from_script(Op, Params, #command_rec{wscrcont=WSCRContent}=CommandRec, St)
+  when is_atom(Params) ->
     Dict = orddict:from_list([{"st", St}]),
     {_, State_1} = crun_section("params_init", WSCRContent, Dict),
     case fill_extra_file_inputs(find_extra_file_sections(WSCRContent), CommandRec, St, fun (CommandRec_1) ->
@@ -1735,19 +1920,20 @@ command_from_script(Op, Params, #command_rec{wscrcont=WSCRContent}=CommandRec, S
     end) of
         {file_inputs, _ExtraFiles} ->
             case get_wscr_params(WSCRContent) of
-                {ok, _Title, [], []} ->
+                {ok, _Title, _, [], []} ->
                     {Op, {command_from_script, {CommandRec, []}}};
-                {ok, Title, SettableParams, Templates}
-                    when length(SettableParams) > 0;
-                         length(Templates) > 0 ->
-                    askdialog(Params, Title,
-                        to_dialog_params(SettableParams, State_1, Dict), Templates,
-                        fun(Res) -> {Op,{command_from_script, {CommandRec, Res}}} end)
+                {ok, Title, PrevMode, SettableParams, Templates}
+                  when length(SettableParams) > 0;
+                       length(Templates) > 0 ->
+                    command_askdialog(
+                      Params, Title, PrevMode, SettableParams, State_1, Dict,
+                      Templates, Op, CommandRec, St)
             end;
         ReturnBack -> ReturnBack
     end;
 command_from_script(Op, ScriptParams, #command_rec{wscrcont=WSCRContent,
-    scrfile=ScriptFileName,scrtype=ScriptType}=CommandRec, St) when is_list(ScriptParams) ->
+    scrfile=ScriptFileName,scrtype=ScriptType}=CommandRec, St)
+  when is_list(ScriptParams) ->
 
     case fill_extra_files(find_extra_file_sections(WSCRContent), CommandRec) of
         {file_inputs, ExtraFiles} ->
@@ -1771,7 +1957,7 @@ command_from_script(Op, ScriptParams, #command_rec{wscrcont=WSCRContent,
                 || {K, V} <- append_extra_files(ExtraFiles, PSScriptParams)],
             {St1, Changed} = wings_sel:mapfold(fun (_ShapeBody, We0, Changed_0) ->
                 {CmdExtraParams, ModCache} = command_extra_params(CmdInputs, We0),
-                case run_script(ScriptType, ScriptFileName, ScriptParams,
+                case run_script_once(ScriptType, ScriptFileName, ScriptParams,
                     [[<<"op">>, Op] |
                      CmdExtraParams ++ PSScriptParams_1],
                     get_settings_for_run_script(), error)
@@ -1962,13 +2148,14 @@ unbool_none_1(A) -> A.
 
 
 
-import_export_from_script(Op, Params, #command_rec{wscrcont=WSCRContent}=CommandRec, St) when is_atom(Params) ->
+import_export_from_script(Op, Params, #command_rec{wscrcont=WSCRContent}=CommandRec, St)
+  when is_atom(Params) ->
     Dict = orddict:from_list([{"st", St}]),
     {_, State_1} = crun_section("params_init", WSCRContent, Dict),
     case get_wscr_params(WSCRContent) of
-        {ok, _Title, [], []} ->
+        {ok, _Title, _, [], []} ->
             {file, {Op, {import_export_from_script, {CommandRec, []}}}};
-        {ok, Title, SettableParams, Templates}
+        {ok, Title, _, SettableParams, Templates}
             when length(SettableParams) > 0;
                  length(Templates) > 0 ->
             askdialog(Params, Title,
@@ -2000,7 +2187,7 @@ import_export_from_script(import, ScriptParams, #command_rec{wscrcont=WSCRConten
                         PSScriptParams_1 = [[binstr(K), V]
                             || {K, V} <- append_extra_files(ExtraFiles, PSScriptParams)],
                         TempFolder = temp_folder(),
-                        case run_script(ScriptType, ScriptFileName, ScriptParams,
+                        case run_script_once(ScriptType, ScriptFileName, ScriptParams,
                             [ [<<"filename">>, binstr(F)],
                               [<<"temp_folder">>, binstr(TempFolder)]
                               | PSScriptParams_1],
@@ -2053,7 +2240,7 @@ import_export_from_script(Op, ScriptParams, #command_rec{wscrcont=WSCRContent,
                             || {K, V} <- append_extra_files(ExtraFiles, PSScriptParams)],
                         TempFolder = temp_folder(),
                         {E3DCont_1, TempFiles} = e3df_filename_tup(E3DCont, TempFolder, ScrSpecPs),
-                        case run_script(ScriptType, ScriptFileName, ScriptParams,
+                        case run_script_once(ScriptType, ScriptFileName, ScriptParams,
                             [ [<<"filename">>, binstr(F)],
                               [<<"content">>, E3DCont_1],
                               [<<"temp_folder">>, binstr(TempFolder)]
@@ -3290,8 +3477,8 @@ test_wscr_content() ->
           "}\n">>, []).
 t() ->
     Settings = [],
-    run_script("py", "C:\\Stuff\\___w3d\\plugins\\primitives\\src\\w3d_scripts\\Script3.py", [7, 2.0, 0.1], [], Settings, keep).
-    % run_script("scm", "C:\\Stuff\\___w3d\\plugins\\primitives\\src\\w3d_scripts\\Script1.scm", [7, 2.0, 0.1], []).
+    run_script_once("py", "C:\\Stuff\\___w3d\\plugins\\primitives\\src\\w3d_scripts\\Script3.py", [7, 2.0, 0.1], [], Settings, keep).
+    % run_script_once("scm", "C:\\Stuff\\___w3d\\plugins\\primitives\\src\\w3d_scripts\\Script1.scm", [7, 2.0, 0.1], []).
 
 test() ->
     Dict = [{"st", {st, 1,2,3,4}}],
