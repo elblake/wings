@@ -33,6 +33,7 @@ MODULES= \
 	wpc_ai \
 	wpc_bzw \
 	wpc_collada \
+	wpc_dxf_m \
 	collada_import \
 	wpc_gltf \
 	wpc_hlines \
