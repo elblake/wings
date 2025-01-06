@@ -4,6 +4,7 @@
 %%     LightWave Object File Format (*.lwo) Import/Export
 %%
 %%  Copyright (c) 2003-2011 Anthony D'Agostino
+%%                2024 Edward Blake (Added LWO3)
 %%
 %%  See the file "license.terms" for information on usage and redistribution
 %%  of this file, and for a DISCLAIMER OF ALL WARRANTIES.
@@ -12,8 +13,11 @@
 %%
 
 -module(wpc_lwo).
--export([init/0, menu/2, command/2, export/1]).
+-export([init/0, menu/2, command/2]).
+-export([t/0]).
+
 -include_lib("wings/e3d/e3d.hrl").
+-include_lib("wings/e3d/e3d_image.hrl").
 -include_lib("wings/intl_tools/wings_intl.hrl").
 
 init() ->
@@ -32,10 +36,16 @@ command({file, {import, lwo}}, St) ->
     wpa:import(Props, fun lwo_import/1, St);
 command({file, {export, lwo}}, St) ->
     Props = props(export),
-    wpa:export(Props, fun export/2, St);
+    Fun = fun (Name, E3D) ->
+        export(lwo2, Name, E3D)
+    end,
+    wpa:export(Props, Fun, St);
 command({file, {export_selected, lwo}}, St) ->
     Props = props(export),
-    wpa:export_selected(Props, fun export/2, St);
+    Fun = fun (Name, E3D) ->
+        export(lwo2, Name, E3D)
+    end,
+    wpa:export_selected(Props, Fun, St);
 command(_, _) -> next.
 
 menu_entry(import, Menu) ->
@@ -52,32 +62,57 @@ props(import) ->
 props(export) ->
     [{ext, ".lwo"},{ext_desc, ?__(1,"LightWave File")}].
 
+-ifdef(DEBUG).
+
+-define(DEBUG_TAG(Item), begin
+    io:fwrite("       ~p\n", [Item]),
+    Item
+end).
+
+-define(DEBUG(Item), begin
+    io:fwrite("~s\n", [Item]),
+    ok
+end).
+
+-define(DEBUG_B(Item), begin
+    if
+        is_atom(Item) -> String = atom_to_list(Item);
+        is_list(Item) -> String = Item
+    end,
+    NumChars = length(String),
+    io:fwrite("+-~s-+\n", [lists:duplicate(NumChars, "-")]),
+    io:fwrite("| ~s |\n", [String]),
+    io:fwrite("+-~s-+\n", [lists:duplicate(NumChars, "-")]),
+    ok
+end).
+
+-else.
+
+-define(DEBUG_TAG(Item), Item).
+
+-define(DEBUG(Item), ok).
+
+-define(DEBUG_B(Item), ok).
+
+-endif.
+
+
+-define(SINT, big-signed-integer).
+-define(UINT, big-unsigned-integer).
+-define(UW, :16/?UINT).
+-define(FLT, :32/big-float).
+-define(FLT8, :64/big-float).
+-define(ID, :4/bytes).
+
+gv(A, List, D) ->
+    proplists:get_value(A, List, D).
+
+gv(A, List) ->
+    proplists:get_value(A, List, none).
 
 %%% ===============================
 %%% === LightWave Export (LWO2) ===
 %%% ===============================
-
-export(E3DFile) ->
-    LWO = make_lwo(E3DFile),
-    file:write_file("1.lwo", LWO).
-
-export(FileName, Contents) ->
-    LWO = make_lwo(Contents),
-    file:write_file(FileName, LWO).
-
-make_lwo(Contents0) ->
-    FlipX = e3d_mat:scale(-1.0, 1.0, 1.0),
-    Contents = e3d_file:transform(Contents0, FlipX),
-    #e3d_file{objs=Objs,mat=Mats,creator=Creator} = Contents,
-    Tags = make_tags(Mats),
-    Surfs = make_surfaces(Mats),
-    Maker = make_auth(Creator),
-    MaterialDict = make_material_dict(Mats),
-    ObjectChunks = make_objects_chunk(Objs, MaterialDict),
-    Chunks = [Maker, Tags, ObjectChunks|Surfs],
-    LwoHeader = make_header(Chunks),
-    LwoData = [LwoHeader|Chunks],
-    LwoData.
 
 make_objects_chunk(Objs, MaterialDict) ->
     NumObjs = length(Objs),
@@ -139,7 +174,7 @@ make_surf(MaterialName, Color) ->
     SurfChunk = list_to_binary([SurfName,SurfEnd,ColorData,CommentData]),
     make_chunk('SURF', SurfChunk).
 
-make_surfaces(Mats) ->
+make_surfaces(_Vers, Mats) ->
     OpMats = [{Name, proplists:get_value(opengl, Mat)} || {Name,Mat} <- Mats],
     RGBAs = [{Name, proplists:get_value(diffuse, OpMat)} || {Name,OpMat} <- OpMats],
     Surfs = [make_surf(atom_to_list(N),C) || {N,C} <- RGBAs],
@@ -215,12 +250,11 @@ make_chunk(ChunkName, ChunkData) ->
     ChunkSize = size(ChunkData),
     [<<ChunkName2/binary, ChunkSize:32, ChunkData/binary>>].
 
-make_header(Chunks) ->
+make_header(C, Chunks) ->
     DataSize = size(list_to_binary(Chunks)),
     FormSize = DataSize + length("LWO2"),
     A = <<"FORM">>,
     B = <<FormSize:32>>,
-    C = <<"LWO2">>,
     [A,B,C].
 
 make_vmad_vc(Mesh) ->
@@ -285,9 +319,35 @@ make_auth(Creator) ->
     Comment = make_nstring("----> Exported from: " ++ Creator ++ " <----"),
     make_chunk('AUTH', Comment).
 
-%%% ===============================
-%%% === LightWave Import (LWO2) ===
-%%% ===============================
+%%% LWO3 Export
+%%% ===========
+
+export(Vers, FileName, Contents) ->
+    LWO = make_lwo(Vers, Contents),
+    file:write_file(FileName, LWO).
+
+make_lwo(Vers, Contents0) ->
+    FlipX = e3d_mat:scale(-1.0, 1.0, 1.0),
+    Contents = e3d_file:transform(Contents0, FlipX),
+    #e3d_file{objs=Objs,mat=Mats,creator=Creator} = Contents,
+    Tags = make_tags(Mats),
+    Surfs = make_surfaces(Vers, Mats),
+    Maker = make_auth(Creator),
+    MaterialDict = make_material_dict(Mats),
+    ObjectChunks = make_objects_chunk(Objs, MaterialDict),
+    Chunks = [Maker, Tags, ObjectChunks|Surfs],
+    make_lwo_combine(Vers, Chunks).
+make_lwo_combine(lwo2, Chunks) ->
+    LwoHeader = make_header(<<"LWO2">>, Chunks),
+    LwoData = [LwoHeader|Chunks],
+    LwoData.
+
+
+
+
+%%% ========================
+%%% === LightWave Import ===
+%%% ========================
 
 read_cstring(Data) ->
     read_cstring(Data, []).
@@ -310,13 +370,18 @@ read_nstring(String) ->
 	false -> "Not Named"
     end.
 
-read_header(Data) ->
-    <<FormId:4/binary, _FormSize:32, FormType:4/binary, Rest/binary>> = Data,
-    FormId = <<"FORM">>,
-    case (FormType == <<"LWO2">>) or (FormType == <<"LXOB">>) of
-	true -> Rest;
-	false -> wings_u:error_msg(?__(1,"LWO files in v5.5 format are not supported."))
-    end.
+read_header(<<"FORM", _:32, SubForm:4/bytes, Rest/binary>>=Content) ->
+    case SubForm of
+        <<"LWOB">> -> {lwob, Rest};
+        <<"LWO2">> -> {lwo2, Rest};
+        <<"LXOB">> -> {lwo2, Rest};
+        <<"LWO3">> -> {lwo3, Content};
+        _ ->
+            wings_u:error_msg(
+                ?__(1,"LWO files in v5.5 format are not supported."))
+    end;
+read_header(_) ->
+    wings_u:error_msg(?__(2,"Not an LWO (FORM) file.")).
 
 read_tags(Data) ->
     TagsList = binary_to_list(Data),
@@ -326,7 +391,7 @@ read_tags(Data) ->
 read_layr(Data) ->
     <<_:16/binary, BiName/binary>> = Data,
     LayerName = read_nstring(binary_to_list(BiName)),
-    LayerName.
+    {{0.0, 0.0, 0.0}, LayerName, -1}.
 
 read_pnts(<<>>) -> [];
 read_pnts(Data) ->
@@ -363,84 +428,657 @@ read_vx(Data) ->
     end,
     {Index, Rest}.
 
-read_rgb(Data) ->
-    try
-	<<_:16,"COLR",_:16, R:32/float,G:32/float,B:32/float, _More/binary>> = Data,
-	{R,G,B}
-    catch _:_ ->
-	{0.9,0.9,0.9}
-    end.
-
-read_surf(Data) ->
-    {MaterialName, Rest} = read_cstring(Data),
-    {R,G,B} = read_rgb(Rest),
-    {list_to_atom(MaterialName), {R,G,B}}.
 
 read_ptag(Data) ->
     <<Ptag:4/binary, Rest/binary>> = Data,
     case Ptag of
-	<<"SURF">> -> read_ptag(Rest, []);
-	<<"MATR">> -> read_ptag(Rest, []);
-	_ -> list_to_atom(binary_to_list(Ptag))
+        <<"SURF">> -> read_ptag_surfidx(Rest);
+        <<"MATR">> -> read_ptag_surfidx(Rest);
+        _ -> list_to_atom(binary_to_list(Ptag))
     end.
 
-read_ptag(<<>>, Acc) -> Acc;
-read_ptag(Data, Acc) ->
+read_ptag_surfidx(Data) ->
+    {surfidx, read_ptag_surfidx(Data, [])}.
+read_ptag_surfidx(<<>>, Acc) -> Acc;
+read_ptag_surfidx(Data, Acc) ->
     {FaceIndex, Rest} = read_vx(Data),
     {SurfIndex, More} = read_vx(Rest),
-    [{FaceIndex,SurfIndex} | read_ptag(More, Acc)].
+    [{FaceIndex,SurfIndex} | read_ptag_surfidx(More, Acc)].
 
-read_chunk(Data, Chunks) ->
+
+read_vmap(<<Type?ID, Dim?UW, Values/binary>>) ->
+    {Name, Bin1} = read_cstring(Values),
+    {Type, Name, read_vmap_list(Dim, Bin1)}.
+
+read_vmap_list(Dim, Bin) ->
+    read_vmap_list(Dim, Bin, []).
+read_vmap_list(_Dim, <<>>, L) ->
+    lists:reverse(L);
+read_vmap_list(Dim, Bin, L) ->
+    {Vert, Bin2} = read_vx(Bin),
+    {Values, Bin3} = read_vmap_dim(Dim, Bin2),
+    read_vmap_list(Dim, Bin3, [{Vert, Values}|L]).
+
+read_vmap_dim(1, <<F1?FLT,Bin/binary>>) ->
+    {F1, Bin};
+read_vmap_dim(2, <<F1?FLT,F2?FLT,Bin/binary>>) ->
+    {{F1,F2}, Bin};
+read_vmap_dim(3, <<F1?FLT,F2?FLT,F3?FLT,Bin/binary>>) ->
+    {{F1,F2,F3}, Bin};
+read_vmap_dim(4, <<F1?FLT,F2?FLT,F3?FLT,F4?FLT,Bin/binary>>) ->
+    {{F1,F2,F3,F4}, Bin}.
+
+read_bbox(<<MinX?FLT,MinY?FLT,MinZ?FLT,
+          MaxX?FLT,MaxY?FLT,MaxZ?FLT>>) ->
+    {{MinX, MinY, MinZ}, {MaxX, MaxY, MaxZ}}.
+
+
+read_vmad(<<Type?ID, Dim?UW, Values/binary>>) ->
+    {Name, Bin1} = read_cstring(Values),
+    {Type, Name, read_vmad_list(Dim, Bin1)}.
+
+read_vmad_list(Dim, Bin) ->
+    read_vmad_list(Dim, Bin, []).
+read_vmad_list(_Dim, <<>>, L) ->
+    lists:reverse(L);
+read_vmad_list(Dim, Bin, L) ->
+    {Vert, Bin2} = read_vx(Bin),
+    {Poly, Bin3} = read_vx(Bin2),
+    {Values, Bin4} = read_vmad_dim(Dim, Bin3),
+    read_vmad_list(Dim, Bin4, [{Vert, Poly, Values}|L]).
+
+read_vmad_dim(1, <<F1?FLT,Bin/binary>>) ->
+    {F1, Bin};
+read_vmad_dim(2, <<F1?FLT,F2?FLT,Bin/binary>>) ->
+    {{F1,F2}, Bin};
+read_vmad_dim(3, <<F1?FLT,F2?FLT,F3?FLT,Bin/binary>>) ->
+    {{F1,F2,F3}, Bin};
+read_vmad_dim(4, <<F1?FLT,F2?FLT,F3?FLT,F4?FLT,Bin/binary>>) ->
+    {{F1,F2,F3,F4}, Bin}.
+
+
+read_vmpa(<<UVType:32/?UINT,Col:32/?UINT>>) ->
+    {UVType, Col}.
+
+
+
+%%% LWOB Import
+%%% ===========
+
+read_lwob(<<>>, Chunks) ->
+    lists:reverse(Chunks);
+read_lwob(Data, Chunks) ->
+    {Rest, Chunks2} = lwob_read_chunk(Data, Chunks),
+    read_lwob(Rest, Chunks2).
+
+lwob_read_chunk(Data, Chunks) ->
+    <<ChunkId:4/binary, ChunkSize:32, Rest/binary>> = Data,
+    <<ChunkData:ChunkSize/binary, Rest2/binary>> = Rest,
+    ChunkSize = size(ChunkData),
+    case lwob_c(ChunkId,ChunkData) of
+        {srfs,_}=Chunk ->
+            {Rest2, lwob_srfs_pnts(Chunk, Chunks)};
+        {pnts,_}=Chunk ->
+            {Rest2, lwob_srfs_pnts(Chunk, Chunks)};
+        {poly, List} ->
+            Poly = [Vs || {Vs,_} <- List],
+            SurfIdx = lwob_surfidx(List),
+            {Rest2, [
+                {o,{ptag,{surfidx,SurfIdx}}},
+                {o,{poly,Poly}}|Chunks]};
+        {srftx,SurfTex} ->
+            {Rest2, lwob_surf_2(SurfTex, Chunks)};
+        Chunk ->
+            {Rest2, [Chunk|Chunks]}
+    end.
+
+lwob_c(<<"SRFS">>, ChunkData) ->
+    ?DEBUG_TAG({srfs, read_tags(ChunkData)});
+lwob_c(<<"PNTS">>, ChunkData) ->
+    ?DEBUG_TAG({pnts, read_pnts(ChunkData)});
+lwob_c(<<"POLS">>, ChunkData) ->
+    ?DEBUG_TAG({poly, lwob_pols(ChunkData)});
+lwob_c(<<"SURF">>, ChunkData) ->
+    ?DEBUG_TAG({srftx, lwob_surf(ChunkData)});
+lwob_c(ChunkId, ChunkData) ->
+    ChunkName = binary_to_list(ChunkId) ++ " Chunk",
+    io:format("ChunkData=~p~n",[ChunkData]),
+    ?DEBUG_TAG(list_to_atom(ChunkName)).
+
+lwob_pols(<<>>) ->
+    [];
+lwob_pols(<<Num?UW,R0/binary>>) ->
+    {Verts, <<S?UW,R/binary>>} = lwob_pols_v(Num, R0, []),
+    [{Verts, S}|lwob_pols(R)].
+lwob_pols_v(0, R, Vs) ->
+    {lists:reverse(Vs), R};
+lwob_pols_v(Num, <<V?UW,R/binary>>, Vs) ->
+    lwob_pols_v(Num-1, R, [V|Vs]).
+
+%% Read surf (for LWOB)
+lwob_surf(Data) ->
+    {MaterialName, Rest} = read_cstring(Data),
+    A = lwob_surf_2c(Rest, []),
+    <<R,G,B,_>> = gv(<<"COLR">>, A, <<190,190,190,0>>),
+    <<Diff0?UW>> = gv(<<"DIFF">>, A, <<0,255>>),
+    <<Spec0?UW>> = gv(<<"SPEC">>, A, <<0,0>>),
+
+    FileNameT = strz(gv(<<"TIMG">>, A, <<0,0>>)),
+    FileNameR = strz(gv(<<"RIMG">>, A, <<0,0>>)),
+    RGB = {R/255.0,G/255.0,B/255.0},
+    Diff = Diff0 / 255.0,
+    Spec = Spec0 / 255.0,
+
+    Tex = {FileNameT, FileNameR},
+    MatPs = #{
+        "color"=>RGB,
+        "diffuse"=>Diff,
+        "specular"=>Spec
+    },
+    {list_to_atom(MaterialName), MatPs, Tex}.
+lwob_surf_2c(<<>>, Acc) ->
+    lists:reverse(Acc);
+lwob_surf_2c(<<C:4/bytes,S?UW,Data/binary>>, Acc) ->
+    CD = binary:part(Data, {0, S}),
+    Rest = binary:part(Data, {S, byte_size(Data)-S}),
+    lwob_surf_2c(Rest, [{C,CD}|Acc]).
+
+lwob_surfidx(List) ->
+    lwob_surfidx(List, 0, []).
+lwob_surfidx([], _, IL) ->
+    lists:reverse(IL);
+lwob_surfidx([{_,Idx}|List], Num, IL) ->
+    lwob_surfidx(List, Num+1, [{Num,Idx-1}|IL]).
+
+lwob_srfs_pnts({srfs,List}, [{o,{pnts,_}}=A|Chunks]) ->
+    [A,lwob_layr(),{o,{tags,List}}|Chunks];
+lwob_srfs_pnts({pnts,_}=Chunk, [{o,{tags,_}}|_]=Chunks) ->
+    [{o,Chunk},lwob_layr()|Chunks];
+lwob_srfs_pnts({srfs,List}, Chunks) ->
+    [{o,{tags,List}}|Chunks];
+lwob_srfs_pnts(Chunk, Chunks) ->
+    [{o,Chunk}|Chunks].
+
+lwob_layr() ->
+    {o, {layr, {none,unnamed,none}}}.
+
+lwob_surf_2({Name,Mat,{T,R}}, Chunks) ->
+    [{m,{surf,{Name,Mat}}}|lwob_surf_2_([{t,T},{r,R}],Chunks)].
+lwob_surf_2_([], Chunks) ->
+    Chunks;
+lwob_surf_2_([{_,""}|List], Chunks) ->
+    lwob_surf_2_(List, Chunks);
+lwob_surf_2_([{t,Tex}|List], Chunks) ->
+    [{m,{clip,{diffuse,unnamed,Tex}}}|lwob_surf_2_(List, Chunks)];
+lwob_surf_2_([{r,Tex}|List], Chunks) ->
+    [{m,{clip,{metallic,unnamed,Tex}}}|lwob_surf_2_(List, Chunks)].
+
+
+
+%%% LWO2 Import
+%%% ===========
+
+read_lwo2(<<>>, Chunks) ->
+    lists:reverse(Chunks);
+read_lwo2(Data, Chunks) ->
+    {Rest, Chunks2} = lwo2_read_chunk(Data, Chunks),
+    read_lwo2(Rest, Chunks2).
+
+lwo2_read_chunk(Data, Chunks) ->
     <<ChunkId:4/binary, ChunkSize:32, Rest/binary>> = Data,
     <<ChunkData:ChunkSize/binary, Rest2/binary>> = Rest,
     ChunkSize = size(ChunkData),
     %% io:fwrite("Chunk: ~s, Size: ~p\n", [binary_to_list(ChunkId), ChunkSize]),
-    case ChunkId of
-	<<"TAGS">> ->
-	    Tags = read_tags(ChunkData),
-	    pp(Tags),
-	    Chunk = Tags;
-	<<"LAYR">> ->
-	    Layr = read_layr(ChunkData),
-	    pp(Layr),
-	    Chunk = Layr;
-	<<"PNTS">> ->
-	    Verts = read_pnts(ChunkData),
-	    %pp(Verts),
-	    Chunk = Verts;
-	<<"POLS">> ->
-	    Faces = read_pols(ChunkData),
-	    %pp(Faces),
-	    Chunk = Faces;
-	<<"PTAG">> ->
-	    Ptag = read_ptag(ChunkData),
-	    %pp(Ptag),
-	    Chunk = Ptag;
-	<<"SURF">> ->
-	    Surf = read_surf(ChunkData),
-	    pp(Surf),
-	    Chunk = Surf;
-	_ ->
-	    ChunkName = binary_to_list(ChunkId) ++ " Chunk",
-	    %Chunk = term_to_binary(Ptags);
-	    Chunk = list_to_atom(ChunkName)
+    Chunk = lwo2_c(ChunkId,ChunkData),
+    {Rest2, [Chunk|Chunks]}.
+
+lwo2_c(<<"BBOX">>, ChunkData) ->
+    ?DEBUG_TAG({bbox, read_bbox(ChunkData)});
+lwo2_c(<<"CLIP">>, ChunkData) ->
+    ?DEBUG_TAG({m, {clip, lwo2_clip(ChunkData)}});
+lwo2_c(<<"TAGS">>, ChunkData) ->
+    ?DEBUG_TAG({o, {tags, read_tags(ChunkData)}});
+lwo2_c(<<"LAYR">>, ChunkData) ->
+    ?DEBUG_TAG({o, {layr, read_layr(ChunkData)}});
+lwo2_c(<<"PNTS">>, ChunkData) ->
+    ?DEBUG_TAG({o, {pnts, read_pnts(ChunkData)}});
+lwo2_c(<<"POLS">>, ChunkData) ->
+    ?DEBUG_TAG({o, {poly, read_pols(ChunkData)}});
+lwo2_c(<<"PTAG">>, ChunkData) ->
+    ?DEBUG_TAG({o, {ptag, read_ptag(ChunkData)}});
+lwo2_c(<<"SURF">>, ChunkData) ->
+    ?DEBUG_TAG({m, {surf, lwo2_surf(ChunkData)}});
+lwo2_c(<<"VMAP">>, ChunkData) ->
+    ?DEBUG_TAG({o, {vmap, read_vmap(ChunkData)}});
+lwo2_c(<<"VMAD">>, ChunkData) ->
+    {vmad, read_vmad(ChunkData)};
+lwo2_c(<<"VMPA">>, ChunkData) ->
+    {vmpa, read_vmpa(ChunkData)};
+
+lwo2_c(<<"ITEM">>, ChunkData) ->
+    {lxob, lxob_ch(ChunkData)};
+
+lwo2_c(ChunkId, ChunkData) ->
+    ChunkName = binary_to_list(ChunkId) ++ " Chunk",
+    io:format("ChunkData=~p~n",[ChunkData]),
+    ?DEBUG_TAG(list_to_atom(ChunkName)).
+
+%% Read surf (for LWO2)
+lwo2_surf(Data) ->
+    {MaterialName, Rest} = read_cstring(Data),
+    A = lwo2_surf_2c(Rest),
+    RGB = gv(<<"COLR">>, A, {0.9,0.9,0.9}),
+    Diff = gv(<<"DIFF">>, A, 1.0),
+    Spec = gv(<<"SPEC">>, A, 0.0),
+    MatPs = #{
+        "color"=>RGB,
+        "diffuse"=>Diff,
+        "specular"=>Spec
+    },
+    {list_to_atom(MaterialName), MatPs}.
+
+lwo2_surf_2c(<<_:16,Rest/binary>>) ->
+    lwo2_surf_2c(Rest, []).
+lwo2_surf_2c(<<>>, Acc) ->
+    lists:reverse(Acc);
+lwo2_surf_2c(<<C:4/bytes,S?UW,Data/binary>>, Acc) ->
+    CD = binary:part(Data, {0, S}),
+    Rest = binary:part(Data, {S, byte_size(Data)-S}),
+    lwo2_surf_2c(Rest, [{C,lwo2_surf_2c_1(C, CD)}|Acc]).
+
+lwo2_surf_2c_1(<<"BLOK">>, Data) ->
+    lwo2_surf_2c(Data, []);
+lwo2_surf_2c_1(<<"IMAP">>, <<_?UW,Data/binary>>) ->
+    lwo2_surf_2c(Data, []);
+lwo2_surf_2c_1(<<"TMAP">>, Data) ->
+    lwo2_surf_2c(Data, []);
+lwo2_surf_2c_1(<<"COLR">>, <<R:32/float,G:32/float,B:32/float,_/binary>>) ->
+    {R,G,B};
+lwo2_surf_2c_1(<<"VMAP">>, Data) ->
+    {Str, _} = read_cstring(Data),
+    Str;
+lwo2_surf_2c_1(<<"STIL">>, Data) ->
+    {Str, _} = read_cstring(Data),
+    Str;
+lwo2_surf_2c_1(<<"DIFF">>,<<F?FLT,0,0>>) -> F;
+lwo2_surf_2c_1(<<"SPEC">>,<<F?FLT,0,0>>) -> F;
+lwo2_surf_2c_1(<<"OPAC">>,<<0,0,F?FLT,0,0>>) -> F;
+lwo2_surf_2c_1(<<"ENAB">>,<<E?UW>>) -> E;
+lwo2_surf_2c_1(<<"NEGA">>,<<E?UW>>) -> E;
+lwo2_surf_2c_1(<<"CNTR">>,<<X?FLT,Y?FLT,Z?FLT,0,0>>) -> {X,Y,Z};
+lwo2_surf_2c_1(<<"SIZE">>,<<X?FLT,Y?FLT,Z?FLT,0,0>>) -> {X,Y,Z};
+lwo2_surf_2c_1(<<"ROTA">>,<<X?FLT,Y?FLT,Z?FLT,0,0>>) -> {X,Y,Z};
+lwo2_surf_2c_1(<<"OREF">>,<<E?UW>>) -> E;
+lwo2_surf_2c_1(<<"CSYS">>,<<E?UW>>) -> E;
+lwo2_surf_2c_1(<<"PROJ">>,<<E?UW>>) -> E;
+lwo2_surf_2c_1(<<"AXIS">>,<<E?UW>>) -> E;
+lwo2_surf_2c_1(<<"IMAG">>,<<E?UW>>) -> E;
+lwo2_surf_2c_1(<<"WRAP">>,<<WWrap?UW,HWrap?UW>>) -> {WWrap,HWrap};
+lwo2_surf_2c_1(<<"WRPW">>,<<F?FLT,0,0>>) -> F;
+lwo2_surf_2c_1(<<"WRPH">>,<<F?FLT,0,0>>) -> F;
+lwo2_surf_2c_1(<<"PIXB">>,<<E?UW>>) -> E;
+
+lwo2_surf_2c_1(_, CD) ->
+    CD.
+
+lwo2_clip(Data) ->
+    {_, Rest} = read_cstring(Data),
+    A = lwo2_surf_2c(Rest),
+    case gv(<<"STIL">>, A) of
+        none ->
+            {none, none};
+        FileName when is_list(FileName) ->
+            TexName = "noname",
+            {diffuse,list_to_atom(TexName), FileName}
+    end.
+
+
+lxob_ch(Data) ->
+    {Str1, Bin0} = read_cstring(Data),
+    {Str2, <<_?UW,Num?UW,Bin/binary>>} = read_cstring(Bin0),
+    {Str1, {Num, Str2}, lxob_ch_2c(Bin)}.
+    
+lxob_ch_2c(<<>>) ->
+    [];
+lxob_ch_2c(<<Id?ID,Size?UW,Bin/binary>>) ->
+    C = binary:part(Bin, {0, Size}),
+    CD = binary:part(Bin, {Size, byte_size(Bin)-Size}),
+    [{Id, C}|lxob_ch_2c(CD)].
+
+
+
+
+%%% LWO3 Import
+%%% ===========
+
+%% Read the nested FORMs.
+%% 
+read_lwo3(Bin) ->
+    read_lwo3(Bin, [], []).
+read_lwo3(<<>>, _Context, OL) ->
+    lists:reverse(OL);
+read_lwo3(<<SubTag?ID, Size:32/?UINT, Bin/binary>>, Context, OL) ->
+    A1 = binary:part(Bin, {0, Size}),
+    A2 = binary:part(Bin, {Size, byte_size(Bin)-Size}),
+    {SubTag_1, Content} = case SubTag of
+        <<"FORM">> ->
+            <<SubForm?ID,A1_1/binary>> = A1,
+            {{form, SubForm}, read_lwo3(A1_1, [SubForm|Context], [])};
+        _ ->
+            lwo3_c(SubTag, Context, A1)
     end,
-    Chunks2 = lists:append(Chunks, [Chunk]),
-    {Rest2, Chunks2}.
+    read_lwo3(A2, Context, [{SubTag_1, Content}|OL]).
 
-read_chunks(<<>>, Chunks) ->
-    Chunks;
-read_chunks(Data, Chunks) ->
-    {Rest, Chunks2} = read_chunk(Data, Chunks),
-    read_chunks(Rest, Chunks2).
+lwo3_c(<<"PTAG">>, [<<"LWO3">>], Values) ->
+    {o, {ptag, read_ptag(Values)}};
+lwo3_c(<<"TAGS">>, [<<"LWO3">>], Values) ->
+    {o, {tags, read_tags(Values)}};
+lwo3_c(<<"PNTS">>, [<<"LWO3">>], Values) ->
+    {o, {pnts, read_pnts(Values)}};
+lwo3_c(<<"POLS">>, [<<"LWO3">>], Values) ->
+    {o, {poly, read_pols(Values)}};
+lwo3_c(<<"LAYR">>, [<<"LWO3">>], Bin) ->
+    {o, {layr, lwo3_layr(Bin)}};
 
-make_e3ds(Objs) ->
-    [Tags | Rest] = Objs,
-    make_e3ds(Tags, Rest).
+lwo3_c(<<"OTAG">>, [<<"LWO3">>], <<Type?ID, Values/binary>>) ->
+    {otag, {Type, strz(Values)}};
+lwo3_c(<<"VMAD">>, [<<"LWO3">>], Values) ->
+    {vmad, read_vmad(Values)};
+lwo3_c(<<"VMPA">>, [<<"LWO3">>], Values) ->
+    {vmpa, read_vmpa(Values)};
+lwo3_c(<<"VMAP">>, [<<"LWO3">>], Values) ->
+    {o, {vmap, read_vmap(Values)}};
+
+lwo3_c(<<"BBOX">>, _Context, Values) ->
+    {bbox, read_bbox(Values)};
+
+lwo3_c(<<"NLOC">>, [<<"NROT">>|_], <<X:32/?SINT,Y:32/?SINT>>) ->
+    {nloc, {X, Y}};
+lwo3_c(<<"NZOM">>, [<<"NROT">>|_], <<Zoom?FLT>>) ->
+    {nzom, Zoom};
+lwo3_c(<<"NSTA">>, [<<"NROT">>|_], <<State?UW>>) ->
+    {nsta, State};
+lwo3_c(<<"NVER">>, [<<"NODS">>|_], <<Version:32/?UINT>>) ->
+    {nver, Version};
+lwo3_c(<<"NSRV">>, [<<"NNDS">>|_], Values) ->
+    {nsrv, strz(Values)};
+
+lwo3_c(<<"NRNM">>, [<<"NTAG">>|_], Values) ->
+    {nrnm, strz(Values)};
+lwo3_c(<<"NNME">>, [<<"NTAG">>|_], Values) ->
+    {nnme, strz(Values)};
+lwo3_c(<<"NCRD">>, [<<"NTAG">>|_], <<X:32/?UINT,Y:32/?SINT>>) ->
+    {ncrd, {X, Y}};
+lwo3_c(<<"NMOD">>, [<<"NTAG">>|_], <<Mode:32/?UINT>>) ->
+    {nmod, Mode};
+lwo3_c(<<"NPRW">>, [<<"NTAG">>|_], Values) ->
+    {preview, strz(Values)};
+lwo3_c(<<"NPLA">>, [<<"NTAG">>|_], <<Placement:32/?UINT>>) ->
+    {npla, Placement};
+
+lwo3_c(<<"INME">>, [<<"NCON">>|_], Values) ->
+    {inme, strz(Values)};
+lwo3_c(<<"IINM">>, [<<"NCON">>|_], Values) ->
+    {iinm, strz(Values)};
+lwo3_c(<<"IINN">>, [<<"NCON">>|_], Values) ->
+    {iinm, strz(Values)};
+lwo3_c(<<"IONM">>, [<<"NCON">>|_], Values) ->
+    {ionm, strz(Values)};
+
+lwo3_c(<<"FLAG">>, _, <<Flag:32/?UINT>>) ->
+    {flag, Flag};
+lwo3_c(<<"NAME">>, [<<"ENTR">>|_], Values) ->
+    {name, strz(Values)};
+lwo3_c(<<"TAG ">>, [<<"ENTR">>|_], Bin) ->
+    {nsel, strz_list(Bin)};
+
+lwo3_c(<<"VERS">>, _Context, <<Version:32/?UINT>>) ->
+    {vers, Version};
+
+lwo3_c(<<"ENUM">>, [<<"META">>|_], <<Enum:32/?UINT>>) ->
+    {enum, Enum};
+
+lwo3_c(<<"CHAN">>, [<<"IMAP">>|_], Values) ->
+    {chan, lwo3_chan(Values)};
+lwo3_c(<<"NEGA">>, [<<"IMAP">>|_], <<Invert?UW>>) ->
+    {nega, Invert};
+lwo3_c(<<"CSYS">>, [<<"TMAP">>|_], <<Type?UW>>) ->
+    {csys, Type};
+lwo3_c(<<"OREF">>, [<<"TMAP">>|_], Values) ->
+    {oref, strz(Values)};
+
+lwo3_c(<<"PROJ">>, _Context, <<Proj?UW>>) ->
+    {proj, Proj};
+lwo3_c(<<"AXIS">>, _Context, <<Axis?UW>>) ->
+    {axis, Axis};
+lwo3_c(<<"IMAG">>, _Context, Values) ->
+    {TImg, <<>>} = read_vx(Values),
+    {imag, TImg};
+lwo3_c(<<"WRAP">>, _Context, <<WWrap?UW,HWrap?UW>>) ->
+    {wrap, {WWrap, HWrap}};
+lwo3_c(<<"AAST">>, _Context, <<Flags?UW,AAValue?FLT>>) ->
+    {aast, {Flags, AAValue}};
+lwo3_c(<<"PIXB">>, _Context, <<Pixb?UW>>) ->
+    {pixb, Pixb};
+
+lwo3_c(<<"NCOM">>, _Context, Values) ->
+    {comment, strz(Values)};
+lwo3_c(<<"SSHN">>, _Context, Values) ->
+    {sshn, strz(Values)};
+lwo3_c(<<"NSEL">>, _Context, <<NSel:32/?UINT>>) ->
+    {nsel, NSel};
+
+lwo3_c(<<"ENAB">>, _Context, <<Enab:16/?UINT>>) ->
+    {enab, Enab};
+
+lwo3_c(<<"VMAP">>, _Context, Values) ->
+    {vmap, strz(Values)};
+
+lwo3_c(<<"    ">>, [C|FormContext], Values) ->
+    {form_data, lwo3_form_data(C, FormContext, Values)};
+lwo3_c(A, _Context, B) ->
+    io:format("Unimp: '~s' ~p~n", [A, B]),
+    {A, B}.
+
+
+lwo3_form_data(<<"SURF">>, [<<"LWO3">>], Bin) ->
+    %% The name of a surface
+    {Name, Bin1} = read_cstring(Bin),
+    Source = strz(Bin1),
+    {Name, Source};
+lwo3_form_data(<<"STIL">>, [<<"LWO3">>], Bin) ->
+    %% Filename for an image
+    FileName = strz(Bin),
+    FileName;
+lwo3_form_data(<<"VALU">>, [<<"ENTR">>,<<"ADAT">>|_], Values) ->
+    %% Describes the data type of nested VALU
+    case read_cstring(Values) of
+        {Str, <<>>} ->
+            Str;
+        Pair ->
+            Pair
+    end;
+lwo3_form_data(<<"CNTR">>, _, Values) ->
+    lwo3_v_idx_env(Values);
+lwo3_form_data(<<"SIZE">>, _, Values) ->
+    lwo3_v_idx_env(Values);
+lwo3_form_data(<<"ROTA">>, _, Values) ->
+    lwo3_v_idx_env(Values);
+
+lwo3_form_data(_, _, Values) ->
+    Values.
+
+strz(Values) ->
+    case read_cstring(Values) of
+        {V, <<>>} -> V
+    end.
+
+strz_list(Values) ->
+    strz_list(Values, []).
+strz_list(<<>>, L) ->
+    lists:reverse(L);
+strz_list(Values, L) ->
+    {V, Bin} = read_cstring(Values),
+    strz_list(Bin, [V|L]).
+
+    
+lwo3_chan(Bin) ->
+    Bin.
+
+lwo3_v_idx_env(<<X?FLT,Y?FLT,Z?FLT,Bin/binary>>) ->
+    {Index, Bin1} = read_vx(Bin),
+    {{X,Y,Z}, Index, Bin1}.
+
+lwo3_layr(<<_Num?UW,_Flags?UW,X?FLT,Y?FLT,Z?FLT,Bin/binary>>) ->
+    {Name, LayrPar} = read_cstring(Bin),
+    Parent = case LayrPar of
+        <<P?UW>> -> P;
+        _ -> -1
+    end,
+    {{X, Y, Z}, read_nstring(Name), Parent}.
+
+
+%%
+%%
+
+lwo3_flatten([{{form,<<"LWO3">>},Form}]) ->
+    lwo3_flatten(Form, []);
+lwo3_flatten(_) ->
+    error("Not a valid LWO3 file.").
+
+lwo3_flatten([], OL) ->
+    lists:reverse(OL);
+lwo3_flatten([{{form,<<"CLIP">>},Clip}|R], OL) ->
+    lwo3_flatten(R, [{m, {clip, lwo3_fl_clip(Clip)}}|OL]);
+lwo3_flatten([{{form,<<"SURF">>},Surf}|R], OL) ->
+    lwo3_flatten(R, [{m, {surf, lwo3_fl_surf(Surf)}}|OL]);
+lwo3_flatten([Tup|R], OL) ->
+    lwo3_flatten(R, [Tup|OL]).
+
+lwo3_fl_clip(Form) ->
+    case gv({form,<<"STIL">>},Form) of
+        [{form_data,Bin}|_] ->
+            {FileName,_} = read_cstring(Bin),
+            TexName = "noname",
+            {diffuse, list_to_atom(TexName), FileName};
+        _ ->
+            {none, none, none}
+    end.
+
+lwo3_fl_surf([{form_data,{Name,_}}|Form]) ->
+    Nodes0 = gvl({form,<<"NODS">>}, Form),
+    Nodes1 = gvl({form,<<"NNDS">>}, Nodes0),
+    case lwo3_each_surf(Nodes1, none) of
+        Nodes when is_list(Nodes) ->
+            {list_to_atom(Name), maps:from_list(Nodes)};
+        none ->
+            {list_to_atom(Name), none}
+    end.
+
+gvl(A, List) ->
+    proplists:get_value(A, List, []).
+
+lwo3_each_surf([], D) ->
+    D;
+lwo3_each_surf([{{form,<<"NTAG">>}, Form0}|L], D) ->
+    case lwo3_surf_data(Form0) of
+        [] ->
+            lwo3_each_surf(L, D);
+        SurfData ->
+            lwo3_each_surf(L, SurfData)
+    end;
+lwo3_each_surf([_|L], D) ->
+    lwo3_each_surf(L, D).
+
+lwo3_surf_data(Form0) ->
+    Form1 = gvl({form,<<"NDTA">>}, Form0),
+    Form4A = gvl({form,<<"ADAT">>}, gvl({form,<<"META">>}, gvl({form,<<"SATR">>}, Form1))),
+    Form4B = gvl({form,<<"ADAT">>}, gvl({form,<<"META">>}, gvl({form,<<"ATTR">>}, Form1))),
+    lwo3_surf_data_1(Form4A ++ Form4B, []).
+
+lwo3_surf_data_1([], OL) ->
+    OL;
+lwo3_surf_data_1([{{form,<<"ENTR">>},Form}|L], OL) ->
+    lwo3_surf_data_1(L, [lwo3_surf_data_entr(Form)|OL]);
+lwo3_surf_data_1([_|L], OL) ->
+    lwo3_surf_data_1(L, OL).
+
+lwo3_surf_data_entr(Form) ->
+    Name0 = gvl(name, Form),
+    Val0 = gvl({form,<<"VALU">>}, Form),
+    Val1 = gvl({form,<<"VALU">>}, Val0),
+    Name = string:lowercase(Name0),
+    case gv(form_data, Val1) of
+        none ->
+            {Name, none};
+        Val ->
+            {Name, lwo3_surf_data_val(Val, Name)}
+    end.
+
+lwo3_surf_data_val(<<0,0,0,4,V1?FLT8,V2?FLT8,V3?FLT8,V4?FLT8>>, _) ->
+    {V1,V2,V3,V4};
+lwo3_surf_data_val(<<0,0,0,3,V1?FLT8,V2?FLT8,V3?FLT8>>, _) ->
+    {V1,V2,V3};
+lwo3_surf_data_val(<<0,0,0,2,V1?FLT8,V2?FLT8>>, _) ->
+    {V1,V2};
+lwo3_surf_data_val(<<0,0,0,1,Val?FLT8>>, _) ->
+    Val;
+lwo3_surf_data_val(Val, _) ->
+    Val.
+
+
+
+
+%%%
+%%%
+
+
+-record(lobj, {
+    layr,
+    pnts,
+    poly,
+    ptag,
+    vmap
+}).
+
+next_layr([{layr,Layr}|Objs]) ->
+    {O, Rest} = next_layr_1(Objs),
+    {O#lobj{layr=Layr}, Rest};
+next_layr([Skipped|Objs]) ->
+    io:format("NOTE: Skipped: ~p~n", [Skipped]),
+    next_layr(Objs).
+next_layr_1(Objs) ->
+    next_layr_1(Objs, #lobj{}).
+next_layr_1([]=Rest, O) ->
+    {O, Rest};
+next_layr_1([{layr,_}|_]=Rest, O) ->
+    {O, Rest};
+next_layr_1([Tag|Rest], O) ->
+    O_1 = case Tag of
+        {pnts,Pnts} ->
+            O#lobj{pnts=Pnts};
+        {poly,Poly} ->
+            O#lobj{poly=Poly};
+        {ptag, Ptag} ->
+            O#lobj{ptag=Ptag};
+        {vmap, Vmap} ->
+            O#lobj{vmap=Vmap}
+    end,
+    next_layr_1(Rest, O_1).
+
+
+
+make_e3ds([{tags, Tags} | Objs]) ->
+    make_e3ds(Tags, Objs).
 
 make_e3ds(_Tags, []) -> [];
+make_e3ds(_Tags, [{tags, Tags} | Objs]) ->
+    make_e3ds(Tags, Objs);
 make_e3ds(Tags, Objs) ->
-    [Name,Vs,Fs,Ptag | Rest] = Objs,
+    {Lobj, Rest} = next_layr(Objs),
+    #lobj{layr={_,Name,_},pnts=Vs,
+        poly=Fs,ptag={surfidx,Ptag}
+        }=Lobj,
     {_FaceIdxs,MaterialIdxs} = lists:unzip(Ptag),
     GetMatName = fun(Idx) -> lists:nth(Idx+1, Tags) end,
     Ms = lists:map(GetMatName, MaterialIdxs),
@@ -450,14 +1088,18 @@ make_e3ds(Tags, Objs) ->
     Obj = #e3d_object{name=Name,obj=Mesh},
     [Obj | make_e3ds(Tags, Rest)].
 
-make_mats([]) -> [];
-make_mats(Mats) ->
-    [{Name,RGB} | Rest] = Mats,
-    {R,G,B} = RGB,
-    RGBA = {R,G,B,1.0},
-    [make_mat(Name, RGBA) | make_mats(Rest)].
+make_mats(List, Dir) ->
+    make_mats([], List, Dir).
+make_mats(_, [], _Dir) -> [];
+make_mats(Clips, [{clip, {_Type,_Name,_}=Clip} | Rest], Dir) ->
+    make_mats([Clip|Clips], Rest, Dir);
+make_mats(Clips, [{surf, {Name,Surf}} | Rest], Dir) ->
+    [make_mat(Name, Surf, Clips, Dir) | make_mats([], Rest, Dir)].
 
-make_mat(Name, RGBA) ->
+rgba({R,G,B},Alpha) ->
+    {R,G,B,Alpha}.
+
+make_mat(Name, Surf, Clips, Dir) ->
     {Name,[{yafray,[{autosmooth_angle,60.0},
 		    {caus,false},
 		    {emit_rad,true},
@@ -472,60 +1114,209 @@ make_mat(Name, RGBA) ->
 		    {current_shader,matte},
 		    {{ribbit,minimized},true},
 		    {{ribbit,select_shader},false}]},
-	   {opengl,[{ambient, {1.0,1.0,1.0,1.0}},
-		    {diffuse, RGBA},
-		    {emission,{0.0,0.0,0.0,1.0}},
-		    {shininess,1.0},
-		    {specular,{1.0,1.0,1.0,1.0}}]},
-	   {maps,[]}]}.
+	   opengl(Surf),
+	   {maps,make_mat_map(Surf,Clips, Dir)}]}.
 
-import(Data) ->
-    Rest = read_header(Data),
-    Chunks = read_chunks(Rest, []),
-    Objs = [Chunk || Chunk<-Chunks, is_list(Chunk)],  %% filter unused chunks
-    Mats = [Chunk || Chunk<-Chunks, is_tuple(Chunk)], %% get Surfs
-    Eobjs = make_e3ds(Objs),
-    Emats = make_mats(Mats),
-    #e3d_file{objs=Eobjs, mat=Emats, creator="LWO Import Plugin"}.
+opengl(Surf) ->
+    List = [
+        ambient,
+        diffuse,
+        emission,
+        shininess,
+        specular,
+        metallic
+    ],
+    OpenGL = [opengl(Surf, A) || A <- List],
+    {opengl, [A || A <- OpenGL, is_tuple(A)]}.
+
+opengl(_, ambient) ->
+    {ambient, {1.0,1.0,1.0,1.0}};
+opengl(Surf, diffuse) ->
+    RGB = case Surf of
+        #{"color":=RGB_0} -> RGB_0;
+        _ -> {0.7,0.7,0.7}
+    end,
+    Alpha = case Surf of
+        #{"transparency":=T} -> 1.0-T;
+        _ -> 0.0
+    end,
+    {diffuse, rgba(RGB, Alpha)};
+%opengl(#{"diffuse":=Diff}=_Surf, diffuse) when is_float(Diff) ->
+%    {diffuse, rgba(RGB)};
+opengl(Surf, emission) ->
+    Lum = case Surf of
+        #{"luminosity":=L} -> L;
+        _ -> 0.0
+    end,
+    {emission,{Lum,Lum,Lum,1.0}};
+opengl(_, shininess) ->
+    {shininess,1.0};
+opengl(#{"specular":=Spec}=_Surf, specular)
+  when is_float(Spec) ->
+    {specular,{Spec,Spec,Spec,1.0}};
+opengl(#{"reflection":=Refl}=_Surf, metallic)
+  when is_float(Refl) ->
+    {metallic,Refl};
+
+%opengl(#{"bump":={1.0,1.0,1.0}}=_Surf, todo) ->
+%    {todo,{Spec,Spec,Spec,1.0}};
+%opengl(#{"bump height":=1.0}=_Surf, todo) ->
+%    {todo,{Spec,Spec,Spec,1.0}};
+%opengl(#{"color filter" => 0.0}=_Surf, todo) ->
+%    {todo,{Spec,Spec,Spec,1.0}};
+%opengl(#{"color highlight" => 0.0}=_Surf, todo) ->
+%    {todo,{Spec,Spec,Spec,1.0}};
+%opengl(#{"diffuse sharpness" => 0.0}=_Surf, todo) ->
+%    {todo,{Spec,Spec,Spec,1.0}};
+%opengl(#{"glossiness" => 0.5}=_Surf, todo) ->
+%    {todo,{Spec,Spec,Spec,1.0}};
+%opengl(#{"refraction blur" => 0.0}=_Surf, todo) ->
+%    {todo,{Spec,Spec,Spec,1.0}};
+%opengl(#{"refraction index" => 1.5}=_Surf, todo) ->
+%    {todo,{Spec,Spec,Spec,1.0}};
+%opengl(#{"translucency" => 0.0}=_Surf, todo) ->
+%    {todo,{Spec,Spec,Spec,1.0}};
+opengl(_, _) ->
+    false.
+               
+
+make_mat_map(_, [], _Dir) ->
+    [];
+make_mat_map(Surf, [{Type,Name,FileName}|Clips], Dir) ->
+    case make_mat_map_img(Surf, Name, FileName, Dir) of
+        {ok, #e3d_image{}=Image} ->
+            [{Name,{Type,Image}}|make_mat_map(Surf,Clips,Dir)];
+        _ ->
+            io:format("Could not load: ~s~n", [FileName]),
+            make_mat_map(Surf,Clips,Dir)
+    end.
+
+make_mat_map_img(_Surf, _Name, FileName, Dir) ->
+    Paths = [
+        filename:join(Dir,FileName),
+        filename:join(Dir,filename:basename(FileName))
+    ],
+    make_mat_map_img_1(Paths).
+make_mat_map_img_1([]) ->
+    error;
+make_mat_map_img_1([FileName|Paths]) ->
+    case file:read_file_info(FileName) of
+        {ok, _} ->
+            get_bitmap(FileName);
+        _ ->
+            make_mat_map_img_1(Paths)
+    end.
+
+get_bitmap(FileName) ->
+    case string:to_lower(filename:extension(FileName)) of
+        ".png" ->
+            read_png(FileName);
+        ".jpg" ->
+            read_jpeg(FileName);
+        _ ->
+            {error, none}
+    end.
+
+read_jpeg(FileName) ->
+    BlockWxMsgs = wxLogNull:new(),
+    Ret = read_jpeg_1(FileName),
+    wxLogNull:destroy(BlockWxMsgs),
+    Ret.
+read_jpeg_1(FileName) ->
+    Image = wxImage:new(),
+    case wxImage:loadFile(Image, FileName) of
+        true ->
+            E3d = wings_image:wxImage_to_e3d(Image),
+            wxImage:destroy(Image),
+            e3d_image:fix_outtype(FileName, E3d, []);
+        false ->
+            {error, none}
+    end.
+read_png(FileName) ->
+    e3d__png:load(FileName).
+
+
+%%%
+%%%
 
 lwo_import(Name) ->
     case file:read_file(Name) of
-	{ok,Bin} ->
-	    ps(""),
-	    print_boxed(Name),
-	    Contents = import(Bin),
-	    ps("EOF"),
-	    FlipX = e3d_mat:scale(-1.0, 1.0, 1.0),
-	    Res = e3d_file:transform(Contents, FlipX),
-	    {ok, Res};
-	{error,Reason} ->
-	    {error,file:format_error(Reason)}
+        {ok,Bin} ->
+            ?DEBUG(""),
+            ?DEBUG_B(Name),
+            Contents = import(Bin, filename:dirname(Name)),
+            ?DEBUG("EOF"),
+            FlipX = e3d_mat:scale(-1.0, 1.0, 1.0),
+            Res = e3d_file:transform(Contents, FlipX),
+            {ok, Res};
+        {error,Reason} ->
+            {error,file:format_error(Reason)}
     end.
+
+import(Data, Dir) ->
+    case read_header(Data) of
+        {lwob, Rest} ->
+            import_1(read_lwob(Rest, []), Dir);
+        {lwo2, Rest} ->
+            import_1(read_lwo2(Rest, []), Dir);
+        {lwo3, Content} ->
+            import_1(lwo3_flatten(read_lwo3(Content)), Dir)
+    end.
+
+import_1(Chunks, Dir) ->
+    Objs = [Chunk || {o, Chunk} <- Chunks], %% get objects
+    Mats = [Chunk || {m, Chunk} <- Chunks], %% get Surfs
+    Eobjs = make_e3ds(Objs),
+    Emats = make_mats(Mats, Dir),
+    #e3d_file{objs=Eobjs, mat=Emats, creator="LWO Import Plugin"}.
 
 %%% ============
 %%% === Misc ===
 %%% ============
-pp(_Item) ->
-%%    io:fwrite("       ~p\n", [_Item]),
-    ok.
-
-ps(_Item) ->
-%%    io:fwrite("~s\n", [_Item]),
-    ok.
-
-print_boxed(_Item) -> ok.
-%% print_boxed(Item) ->
-%%     if
-%% 	is_atom(Item) -> String = atom_to_list(Item);
-%% 	is_list(Item) -> String = Item
-%%     end,
-%%     NumChars = length(String),
-%%     io:fwrite("+-~s-+\n", [lists:duplicate(NumChars, "-")]),
-%%     io:fwrite("| ~s |\n", [String]),
-%%     io:fwrite("+-~s-+\n", [lists:duplicate(NumChars, "-")]).
 
 add_indices(List) ->
     ListLen = length(List),
     Indices = lists:seq(0, ListLen-1),
     IndexedList = lists:zip(List, Indices),
     IndexedList.
+
+
+
+t() ->
+
+    %% LWOB:
+
+    %% 'SRFS', 'POLS', 'SURF'
+    %F="examples/lwo2/LWOB/sphere_with_mat_gloss_50pc.lwo",
+    %F="examples/lwo2/LWOB/sphere_with_mat_gloss_10pc.lwo",
+    %F="examples/lwo2/LWOB/ConcavePolygon.lwo",
+    %F="examples/lwo2/LWOB/bluewithcylindrictexz.lwo",
+
+    %% LWO2:
+
+    %% 'ENVL Chunk'
+    %F="examples/lwo2/sphere_with_gradient.lwo",
+    %%        'VMPA Chunk','VMAD Chunk','VMPA Chunk','VMAD Chunk','VMPA Chunk',
+    %%    'VMAD Chunk',
+    %F="examples/lwo2/box_2vc_1unused.lwo",
+    %% {o,{ptag,'COLR'}}, 'VMPA Chunk','VMAD Chunk','VMPA Chunk','VMAD Chunk',
+    %F="examples/lwo2/box_2uv_1unused.lwo",
+    %F="examples/lwo2/boxuv.lwo",
+    %F="examples/lwo2/Cube07-UVTextureMapPhong.lwo",
+
+    %% LXOB:
+
+    %% 'VMPA', 'VMAD', 'ITEM'
+    %F="examples/lwo2/LXOB/sphereWithVertMap.lxo",
+
+    %% LWO3
+
+    %F="examples/lwo3/cubeuv.lwo",
+    %F="examples/lwo3/Cube07-UVTextureMapPhong.lwo",
+    F="examples/lwo3/cube.lwo",
+
+    {ok,Bin} = file:read_file(F),
+    Contents = import(Bin, "."),
+    Contents.
+
+
