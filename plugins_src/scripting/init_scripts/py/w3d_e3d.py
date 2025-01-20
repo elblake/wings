@@ -25,19 +25,19 @@ def list_of_objects_to_outputlist(objlist):
 		for obj in objlist:
 			if type(obj) is str:
 				outputlist.add_str(obj)
-			elif type(obj) is tuple:
-				o = list_of_objects_to_outputlist(obj)
-				outputlist.add_vector(o)
-			elif hasattr(obj, "__len__"):
-				o = list_of_objects_to_outputlist(obj)
-				outputlist.add_list(o)
-			elif (type(obj) is int):
-				outputlist.add_integer(obj)
-			elif type(obj) is float:
-				outputlist.add_float(obj)
 			else:
-				o = obj.as_output_list()
-				outputlist.add_list(o)
+				outputlist.add_value(obj)
+		return outputlist
+	else:
+		return objlist.as_output_list()
+
+
+def list_of_pairs_to_outputlist(objlist):
+	if hasattr(objlist, "__len__"):
+		outputlist = OutputList()
+		for obj in objlist:
+			o = obj.as_output_list()
+			outputlist.add_vector(o)
 		return outputlist
 	else:
 		return objlist.as_output_list()
@@ -49,19 +49,8 @@ def list_of_atoms_to_outputlist(objlist):
 		for obj in objlist:
 			if type(obj) is str:
 				outputlist.add_symbol(obj)
-			elif type(obj) is tuple:
-				o = list_of_objects_to_outputlist(obj)
-				outputlist.add_vector(o)
-			elif hasattr(obj, "__len__"):
-				o = list_of_objects_to_outputlist(obj)
-				outputlist.add_list(o)
-			elif (type(obj) is int):
-				outputlist.add_integer(obj)
-			elif type(obj) is float:
-				outputlist.add_float(obj)
 			else:
-				o = obj.as_output_list()
-				outputlist.add_list(o)
+				outputlist.add_value(obj)
 		return outputlist
 	else:
 		return objlist.as_output_list()
@@ -69,8 +58,8 @@ def list_of_atoms_to_outputlist(objlist):
 ## Types for transform
 class E3DTransf:
 	def __init__(self):
-		self.mat = [] # e3d_mat:identity() :: e3d_mat:matrix(),
-		self.inv = [] # e3d_mat:identity() :: e3d_mat:matrix()}).
+		self.mat = []
+		self.inv = []
 	
 	def send(self):
 		o3 = OutputList()
@@ -93,9 +82,9 @@ class Ray:
 	def __init__(self):
 		self.o = None
 		self.d = None
-		self.n = None          # Near, far (or MinT MaxT)
+		self.n = None
 		self.f = None
-		self.bfc = True        # Backface culling?
+		self.bfc = True
 	
 	def as_output_list(self):
 		o3 = OutputList()
@@ -369,9 +358,9 @@ class MaterialMaps:
 class MaterialOpenGLAttributes:
 	def __init__(self):
 		self.ambient = [0.0,0.0,0.0,0.0]
-		self.specular = [0.1689853807692308,0.17133333333333334,0.15940444444444446,1.0]
-		self.shininess = 0.19999999999999996
-		self.diffuse = [0.7898538076923077,0.8133333333333334,0.6940444444444445,1.0]
+		self.specular = [0.1,0.1,0.1,1.0]
+		self.shininess = 0.2
+		self.diffuse = [0.7,0.7,0.7,1.0]
 		self.emission = [0.0,0.0,0.0,1.0]
 		self.metallic = 0.1
 		self.roughness = 0.8
@@ -386,67 +375,67 @@ class MaterialOpenGLAttributes:
 		ov = OutputList()
 		ov.add_symbol('ambient')
 		ov.add_vector(ov_r)
-		o3.add_list(ov)
+		o3.add_vector(ov)
 		
 		ov_r = OutputList()
 		ov_r.add_numbers(self.specular)
 		ov = OutputList()
 		ov.add_symbol('specular')
 		ov.add_vector(ov_r)
-		o3.add_list(ov)
+		o3.add_vector(ov)
 		
 		ov = OutputList()
 		ov.add_symbol('shininess')
 		ov.add_float(self.shininess)
-		o3.add_list(ov)
+		o3.add_vector(ov)
 		
 		ov_r = OutputList()
 		ov_r.add_numbers(self.diffuse)
 		ov = OutputList()
 		ov.add_symbol('diffuse')
 		ov.add_vector(ov_r)
-		o3.add_list(ov)
+		o3.add_vector(ov)
 		
 		ov_r = OutputList()
 		ov_r.add_numbers(self.emission)
 		ov = OutputList()
 		ov.add_symbol('emission')
 		ov.add_vector(ov_r)
-		o3.add_list(ov)
+		o3.add_vector(ov)
 		
 		ov = OutputList()
 		ov.add_symbol('metallic')
 		ov.add_float(self.metallic)
-		o3.add_list(ov)
+		o3.add_vector(ov)
 		
 		ov = OutputList()
 		ov.add_symbol('roughness')
 		ov.add_float(self.roughness)
-		o3.add_list(ov)
+		o3.add_vector(ov)
 		
 		ov = OutputList()
 		ov.add_symbol('vertex_colors')
 		ov.add_symbol(self.vertex_colors)
-		o3.add_list(ov)
+		o3.add_vector(ov)
 
 		return o3
 	
 	def load_from(self, tlist):
 		for t_at in tlist:
 			if t_at[0] == 'ambient':
-				self.ambient = t_at[1] ## [0.0, 0.0, 0.0, 0.0]
+				self.ambient = t_at[1]
 			if t_at[0] == 'specular':
-				self.specular = t_at[1] ## [0.1689853807692308, 0.17133333333333334, 0.15940444444444446, 1.0]
+				self.specular = t_at[1]
 			if t_at[0] == 'shininess':
-				self.shininess = t_at[1] ## 0.19999999999999996
+				self.shininess = t_at[1]
 			if t_at[0] == 'diffuse':
-				self.diffuse = t_at[1] ## [0.7898538076923077, 0.8133333333333334, 0.6940444444444445, 1.0]
+				self.diffuse = t_at[1]
 			if t_at[0] == 'emission':
-				self.emission = t_at[1] ## [0.0, 0.0, 0.0, 1.0]
+				self.emission = t_at[1]
 			if t_at[0] == 'metallic':
-				self.metallic = t_at[1] ## 0.1
+				self.metallic = t_at[1]
 			if t_at[0] == 'roughness':
-				self.roughness = t_at[1] ## 0.8
+				self.roughness = t_at[1]
 			if t_at[0] == 'vertex_colors':
 				self.vertex_colors = t_at[1]
 
@@ -466,7 +455,7 @@ class Material:
 			attr_item = OutputList()
 			attr_item.add_symbol(k)
 			attr_item.add_list(v.as_output_list())
-			attr_list.add_list(attr_item)
+			attr_list.add_vector(attr_item)
 		o3.add_list(attr_list)
 		return o3
 	
@@ -497,9 +486,8 @@ class E3DFile:
 		o3 = OutputList()
 		o3.add_symbol("e3d_file")
 		
-		o_objs = OutputList()
 		o3.add_list(list_of_objects_to_outputlist(self.objs))
-		o3.add_list(list_of_objects_to_outputlist(self.mat))
+		o3.add_list(list_of_pairs_to_outputlist(self.mat))
 		
 		o3.add_str(self.creator)
 		o3.add_str(self.dir)
@@ -529,36 +517,16 @@ class E3DFile:
 			else:
 				self.dir = str(t_dir)
 
-			
 
-## For change_points scripts
-class SetPoints:
-	def __init__(self):
-		self.list = []
-	
+## For scripts that change an E3DMesh and return the results
+class SetE3DMesh:
+	def __init__(self,mesh):
+		self.mesh = mesh
 	def as_output_list(self):
-		o3 = OutputList()
-		for v in self.list:
-			vo3 = OutputList()
-			vo3.add_float(v[1][0])
-			vo3.add_float(v[1][1])
-			vo3.add_float(v[1][2])
-			v.add_integer(v[0])
-			v.add_vector(vo3)
-			o3.add_vector(v)
-		o2 = OutputList()
-		o2.add_symbol("set_points")
-		o2.add_list(o3)
-		return o2
-	
-	def load_from(self, vlist):
-		for pair in vlist:
-			a1 = pair[0]
-			a2 = pair[1]
-			a2_x = a2[0]
-			a2_y = a2[1]
-			a2_z = a2[2]
-			self.list.append((a1, (a2_x, a2_y, a2_z)))
+		o = OutputList()
+		o.add_symbol("set_e3d_mesh")
+		o.add_list(self.mesh.as_output_list())
+		return o
 
 
 def test():

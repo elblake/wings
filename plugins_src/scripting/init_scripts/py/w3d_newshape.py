@@ -10,32 +10,8 @@
 ##     $Id$
 ##
 
-from w3d_int import OutputList
+from w3d_int import OutputList, list_of_objects_to_outputlist
 import sys
-
-def list_of_objects_to_outputlist(objlist):
-	if hasattr(objlist, "__len__"):
-		outputlist = OutputList()
-		for obj in objlist:
-			if type(obj) is str:
-				outputlist.add_str(obj)
-			elif type(obj) is tuple:
-				o = list_of_objects_to_outputlist(obj)
-				outputlist.add_vector(o)
-			elif hasattr(obj, "__len__"):
-				o = list_of_objects_to_outputlist(obj)
-				outputlist.add_list(o)
-			elif (type(obj) is int):
-				outputlist.add_integer(obj)
-			elif type(obj) is float:
-				outputlist.add_float(obj)
-			else:
-				o = obj.as_output_list()
-				outputlist.add_list(o)
-		return outputlist
-	else:
-		return objlist.as_output_list()
-
 
 class ListOfArrays:
 	def __init__(self, l):

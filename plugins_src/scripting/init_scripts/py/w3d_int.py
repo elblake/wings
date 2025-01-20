@@ -132,31 +132,8 @@ def bare_word(a0):
 	else:
 		return a1
 
-def wings_set_var(varname, varval):
+def send_get_reply(b):
 	print("")
-	b = OutputList()
-	b.add_symbol("%setvar")
-	b.add_string(varname)
-	b.add_list(varval)
-	b.write_list_out(sys.stdout)
-	print("")
-	sys.stdout.flush()
-	reply = None
-	while True:
-		line = sys.stdin.getline()
-		if (line == ""):
-			pass
-		reply_0, _ = w3d_int.scm_parse(line)
-		reply = reply_0[0]
-		break
-	return reply
-	
-	
-def wings_query(str):
-	print("")
-	b = OutputList()
-	b.add_symbol("%query")
-	b.add_string(str)
 	b.write_list_out(sys.stdout)
 	print("")
 	sys.stdout.flush()
@@ -170,6 +147,53 @@ def wings_query(str):
 		break
 	return reply
 
+
+def wings_set_var(varname, varval):
+	b = OutputList()
+	b.add_symbol("%setvar")
+	b.add_string(varname)
+	b.add_list(varval)
+	return send_get_reply(b)
+
+def wings_query(str):
+	print("")
+	b = OutputList()
+	b.add_symbol("%query")
+	b.add_string(str)
+	return send_get_reply(b)
+
+
+def wings_we__get(module,fun,*args):
+	b = OutputList()
+	b.add_symbol("%we")
+	b.add_symbol(module)
+	b.add_symbol(fun)
+	for arg in args:
+		b.add_value(arg)
+	return send_get_reply(b)
+
+
+def wings_we__change(module,fun,*args):
+	b = OutputList()
+	b.add_symbol("%we!")
+	b.add_symbol(module)
+	b.add_symbol(fun)
+	for arg in args:
+		b.add_value(arg)
+	return send_get_reply(b)
+
+
+def list_of_objects_to_outputlist(objlist):
+	if hasattr(objlist, "__len__"):
+		outputlist = OutputList()
+		for obj in objlist:
+			if type(obj) is str:
+				outputlist.add_str(obj)
+			else:
+				outputlist.add_value(obj)
+		return outputlist
+	else:
+		return objlist.as_output_list()
 
 class OutputList:
 	def __init__(self):
@@ -212,6 +236,26 @@ class OutputList:
 	def add(self, a, typ):
 		self.lst_cont.append(a)
 		self.lst_type.append(typ)
+
+	def add_value(self, obj):
+		if type(obj) is str:
+			self.add_str(obj)
+		elif type(obj) is tuple:
+			o = list_of_objects_to_outputlist(obj)
+			self.add_vector(o)
+		elif hasattr(obj, "__len__"):
+			o = list_of_objects_to_outputlist(obj)
+			self.add_list(o)
+		elif (type(obj) is int):
+			self.add_integer(obj)
+		elif type(obj) is float:
+			self.add_float(obj)
+		elif hasattr(obj, "as_output_list"):
+			o = obj.as_output_list()
+			self.add_list(o)
+		else:
+			o = obj.as_output_list()
+			self.add_list(o)
 	
 	def write_list_out(self, ost):
 		ost.write("(")
@@ -233,6 +277,53 @@ class OutputList:
 				ost.write("#")
 				self.lst_cont[i].write_list_out(ost)
 		ost.write(")")
+
+class Okay:
+	def __init__(self,*args):
+		self.args = args
+	def as_output_list(self):
+		o = OutputList()
+		o.add_symbol("ok")
+		for arg in self.args:
+			o.add_list(arg.as_output_list())
+		return o
+
+
+## For scripts that change vertex positions
+class Points:
+	def __init__(self):
+		self.list = []
+	
+	def as_output_list(self):
+		o3 = OutputList()
+		for v in self.list:
+			vo2 = OutputList()
+			vo3 = OutputList()
+			vo3.add_float(v[1][0])
+			vo3.add_float(v[1][1])
+			vo3.add_float(v[1][2])
+			vo2.add_integer(v[0])
+			vo2.add_vector(vo3)
+			o3.add_vector(vo2)
+		return o3
+	
+	def load_from(self, vlist):
+		for pair in vlist:
+			a1 = pair[0]
+			a2 = pair[1]
+			a2_x = a2[0]
+			a2_y = a2[1]
+			a2_z = a2[2]
+			self.list.append((a1, (a2_x, a2_y, a2_z)))
+
+class SetPoints:
+	def __init__(self,points):
+		self.points = points
+	def as_output_list(self):
+		o = OutputList()
+		o.add_symbol("set_points")
+		o.add_list(points.as_output_list())
+		return o
 
 
 ## Long running process

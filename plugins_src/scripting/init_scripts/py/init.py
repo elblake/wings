@@ -58,6 +58,7 @@ def script_loader_loop():
 			g = {}
 			g["scm_parse"] = w3d_int.scm_parse
 			g["OutputList"] = w3d_int.OutputList
+			g["Okay"] = w3d_int.Okay
 			## Use __t(20, "Text") for localized text
 			g["__t"] = __t
 			# g["wings_set_var"] = w3d_int.wings_set_var
@@ -92,22 +93,37 @@ def script_loader_loop():
 			extra_params = {}
 
 			params = cmd[2]
+
 			## Add to params_by_key parameters that are keyed
 			for p in params:
 				if hasattr(p, "__len__"):
-					params_by_key[p[0]] = p[1]
+					if len(p) == 2:
+						pv = p[1]
+						params_by_key[p[0]] = pv
+
 			## Grab the extra params
 			extra_params_1 = cmd[3]
 			for p in extra_params_1:
 				extra_params[p[0]] = p[1]
-			scr_main_fun(params, params_by_key, extra_params)
+			returned = scr_main_fun(params, params_by_key, extra_params)
+			if returned != None:
+				print("")
+				o = None
+				if hasattr(returned,"as_output_list"):
+					o = returned
+				elif hasattr(returned,"__len__"):
+					o = OutputList()
+					for r in returned:
+						o.add_value(r)
+				if o != None:
+					o.as_output_list().write_list_out(sys.stdout)
 			print("")
 			sys.stdout.flush()
 			print("(%ok)")
 			sys.stdout.flush()
 			
 		else:
-			print("Not run")
+			print("ERROR: Not run")
 			exit(1)
 
 script_loader_loop()

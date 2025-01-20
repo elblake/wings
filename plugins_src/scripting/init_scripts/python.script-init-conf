@@ -1,0 +1,18 @@
+
+%%
+%% Sets the default python binary filenames
+%%
+
+%% NAME  ARGS    INITIAL SCRIPT
+{  "py", false, "py/init.py", [
+    %% List of interpreter filenames to try
+    "python",
+    "python38",
+    "python36",
+    "python34",
+    "python32",
+    "python3"
+], [
+    %% No special arguments
+]}.
+
