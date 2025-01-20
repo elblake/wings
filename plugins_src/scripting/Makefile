@@ -28,7 +28,9 @@ TYPE_FLAGS=
 endif
 
 MODULES= \
-	wpc_scripting_shapes
+	wpc_scripting_shapes \
+	scripting_shapes_e
+
 
 TARGET_FILES= $(MODULES:%=$(EBIN)/%.beam)
 
@@ -60,7 +62,10 @@ clean:
 $(EBIN)/%.beam: $(ESRC)/%.erl $(EBIN)/wpc_scripting_shapes_init
 	$(ERLC) $(ERL_COMPILE_FLAGS) -o$(EBIN) $<
 	
-$(EBIN)/wpc_scripting_shapes_init: $(EBIN)/wpc_scripting_shapes_init/init.py \
+$(EBIN)/wpc_scripting_shapes_init: $(EBIN)/wpc_scripting_shapes_init/defaults.conf \
+                                   $(EBIN)/wpc_scripting_shapes_init/python.script-init-conf \
+                                   $(EBIN)/wpc_scripting_shapes_init/scheme.script-init-conf \
+                                   $(EBIN)/wpc_scripting_shapes_init/init.py \
                                    $(EBIN)/wpc_scripting_shapes_init/w3d_e3d.py \
 								   $(EBIN)/wpc_scripting_shapes_init/w3d_int.py \
 								   $(EBIN)/wpc_scripting_shapes_init/w3d_newshape.py \
@@ -69,8 +74,15 @@ $(EBIN)/wpc_scripting_shapes_init: $(EBIN)/wpc_scripting_shapes_init/init.py \
 								   $(EBIN)/wpc_scripting_shapes_init/init_env_gauche.scm \
 
 MKDIR_INIT_SCRIPTS=mkdir -p $(EBIN)/wpc_scripting_shapes_init/
-$(EBIN)/wpc_scripting_shapes_init/init.py: $(ESRC)/init_scripts/init.py
+$(EBIN)/wpc_scripting_shapes_init/defaults.conf: $(ESRC)/init_scripts/defaults.conf
 	$(MKDIR_INIT_SCRIPTS)
+	cp $(ESRC)/init_scripts/defaults.conf $(EBIN)/wpc_scripting_shapes_init/
+$(EBIN)/wpc_scripting_shapes_init/python.script-init-conf: $(ESRC)/init_scripts/python.script-init-conf
+	cp $(ESRC)/init_scripts/python.script-init-conf $(EBIN)/wpc_scripting_shapes_init/
+$(EBIN)/wpc_scripting_shapes_init/scheme.script-init-conf: $(ESRC)/init_scripts/scheme.script-init-conf
+	cp $(ESRC)/init_scripts/scheme.script-init-conf $(EBIN)/wpc_scripting_shapes_init/
+
+$(EBIN)/wpc_scripting_shapes_init/init.py: $(ESRC)/init_scripts/init.py
 	cp $(ESRC)/init_scripts/init.py $(EBIN)/wpc_scripting_shapes_init/
 $(EBIN)/wpc_scripting_shapes_init/w3d_e3d.py: $(ESRC)/init_scripts/w3d_e3d.py
 	cp $(ESRC)/init_scripts/w3d_e3d.py $(EBIN)/wpc_scripting_shapes_init/
