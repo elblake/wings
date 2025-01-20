@@ -7,7 +7,9 @@
 %%  Requires Gauche for Scheme runtime
 %%  Requires Python 3.6 or later
 %%
-%%  Copyright 2023 Edward Blake
+%%  Copyright 2023-2024 Edward Blake
+%%
+%%  Thanks micheus for help with Script Preference Dialog
 %%
 %%  See the file "license.terms" for information on usage and redistribution
 %%  of this file, and for a DISCLAIMER OF ALL WARRANTIES.
@@ -24,7 +26,7 @@
 
 -record(command_rec, {
     wscrcont,
-    scrfile :: filename:filename(),
+    scrfile :: file:filename_all(),
     scrtype :: string(),
     extrafileinputs=[]
 }).
@@ -46,56 +48,58 @@
     temp_vars = []  %% Temporary variable storage
 }).
 
+-define(PATH_INIT_POSTFIX, "_init").
+
 
 init() ->
+    scripting_shapes_e:init(atom_to_list(?MODULE) ++ ?PATH_INIT_POSTFIX),
+    set_pref_defaults(),
     true.
 
-menu({shape}, []) ->
+menu_enabled(Fun,Menu) ->
     case wpa:pref_get(?MODULE, setting_enable, true) of
-        true -> shape_from_script_menu();
-        _    -> []
-    end;
-menu({shape}, Menu) ->
-    case wpa:pref_get(?MODULE, setting_enable, true) of
-        true -> Menu ++ [separator|shape_from_script_menu()];
+        true -> Fun();
         _    -> Menu
-    end;
-menu({file,import}, Menu) ->
+    end.
+menu_enabled(Atom,Fun,Menu)
+  when is_atom(Atom) ->
     case    wpa:pref_get(?MODULE, setting_enable, true)
-    andalso wpa:pref_get(?MODULE, setting_enable_import, true) of
-        true -> Menu ++ import_from_script_menu();
+    andalso wpa:pref_get(?MODULE, Atom, true) of
+        true -> Fun();
         _    -> Menu
-    end;
-menu({file,export}, Menu) ->
-    case    wpa:pref_get(?MODULE, setting_enable, true)
-    andalso wpa:pref_get(?MODULE, setting_enable_export, true) of
-        true -> Menu ++ export_from_script_menu();
-        _    -> Menu
-    end;
-menu({file,export_selected}, Menu) ->
-    case    wpa:pref_get(?MODULE, setting_enable, true)
-    andalso wpa:pref_get(?MODULE, setting_enable_export, true) of
-        true -> Menu ++ export_from_script_menu();
-        _    -> Menu
-    end;
-    
-menu({Mode},Menu) when Mode == body ->
-    case    wpa:pref_get(?MODULE, setting_enable, true)
-    andalso wpa:pref_get(?MODULE, setting_enable_commands, true) of
-        true -> Menu ++ command_from_script_menu(Mode);
-        _    -> Menu
-    end;
-    
+    end.
 
+menu({shape}, []) ->
+    menu_enabled(
+        fun() -> shape_from_script_menu() end,
+        []);
+menu({shape}, Menu) ->
+    menu_enabled(
+        fun() -> Menu ++ [separator|shape_from_script_menu()] end,
+        Menu);
+menu({file,import}, Menu) ->
+    menu_enabled(setting_enable_import,
+        fun() -> Menu ++ import_from_script_menu() end,
+        Menu);
+menu({file,export}, Menu) ->
+    menu_enabled(setting_enable_export,
+        fun() -> Menu ++ export_from_script_menu() end,
+        Menu);
+menu({file,export_selected}, Menu) ->
+    menu_enabled(setting_enable_export,
+        fun() -> Menu ++ export_from_script_menu() end,
+        Menu);
+menu({Mode},Menu) when Mode == body ->
+    menu_enabled(setting_enable_commands,
+        fun() -> Menu ++ command_from_script_menu(Mode) end,
+        Menu);
 
 menu({edit,plugin_preferences}, Menu) ->
     Menu ++ [{?__(1,"Scripts Preference"), shapes_from_scripts_preference}];
 menu({help}, Menu) ->
-    case    wpa:pref_get(?MODULE, setting_enable, true) of
-        true -> help_script_menu(Menu);
-        _    -> Menu
-    end;
+    menu_enabled(fun() -> help_script_menu(Menu) end, Menu);
 menu(_, Menu) -> Menu.
+
 
 shape_from_script_menu() ->
     [{?__(1,"Shape from Script"), {shape_from_script, mouse_choice()}}].
@@ -134,7 +138,6 @@ mouse_choice() ->
         (_,_) -> ignore
     end.
 
--define(PATH_INIT_POSTFIX, "_init").
 
 command({file, {import, {import_export_from_script, select}}}, fetch_props) ->
     %% TODO: Wings sends this to find out which importer can handle a given file extension.
@@ -176,39 +179,10 @@ command({Op, {command_from_script, select}}, St)
 command({Op, {command_from_script, {#command_rec{}=CommandRec, Params}}}, St) ->
     command_from_script(Op, Params, CommandRec, St);
     
-    
+
 command({edit, {plugin_preferences, shapes_from_scripts_preference}}, St) ->
-    Parent = wings_dialog:get_dialog_parent(),
-    Defaults = [
-        {setting_enable, true},
-        {setting_enable_commands, false},
-        {setting_enable_import, false},
-        {setting_enable_export, false},
-        {setting_paths_shapes, ""},
-        {setting_paths_commands, ""},
-        {setting_paths_import_export, ""},
-        
-        {setting_py_int_path, ""},
-        {setting_scm_int_path, ""},
-        {setting_scm_arguments, ""},
-        {setting_show_tuple, false}
-    ],
-    Result = init_dlg_script_preference(
-        [ {parent, Parent} ] ++
-        [ {SettName, wpa:pref_get(?MODULE, SettName, SettDefault)}
-            || {SettName, SettDefault} <- Defaults], Defaults),
-    [
-        wpa:pref_set(?MODULE, SettName, case proplists:get_value(SettName, Result) of
-            undefined -> proplists:get_value(SettName, Defaults);
-            Val -> Val
-        end)
-    || SettName <- [
-        setting_enable, setting_enable_commands, 
-        setting_enable_import, setting_enable_export, setting_paths_shapes,
-        setting_paths_commands, setting_paths_import_export,
-        setting_py_int_path, setting_scm_int_path, setting_scm_arguments, setting_show_tuple
-    ]],
-    St;
+    dlg_script_preference(St);
+
     
 command({help, {help_info_script, script_basics}}, _St) ->
     {Title, Text} = help_information(script_basics),
@@ -226,7 +200,7 @@ command({help, {help_info_script, Which}}, _St)
 command(_, _) -> next.
     
 cmd_select_from_list(DirsSetting, ScrOp, F) ->
-    ScriptDirs = script_dirs(wpa:pref_get(?MODULE, DirsSetting, "")),
+    ScriptDirs = script_dirs(DirsSetting),
     case scripts_menu_select_plugin(ScriptDirs, ScrOp) of
         {load_script, ScriptFile, ScriptType, WSCRFile} ->
             Params = true,
@@ -313,10 +287,78 @@ askdialog_extra({import, Opts}) ->
 askdialog_extra({export, Opts}) ->
     [wpa:dialog_template(?MODULE, export, Opts)].
 
-askdialog_e({Text, Number}) ->
+askdialog_e({Text, Number})
+  when is_list(Text) ->
     {hframe,[{label,Text},{text,Number}]};
-askdialog_e({Text, Number, C}) ->
-    {hframe,[{label,Text},{text,Number,C}]}.
+askdialog_e({Text, Number, C})
+  when is_list(Text) ->
+    {hframe,[{label,Text},{text,Number,C}]};
+askdialog_e({menu,{menu,List},Text,Default}) ->
+    {hframe,[{label,Text},{menu,List,askdialog_e_mval(Default,List),[]}]};
+askdialog_e({menu,{menu,List},Text,Default,C}) ->
+    {hframe,[{label,Text},{menu,List,askdialog_e_mval(Default,List),C}]};
+askdialog_e({menu,{vradio,List},Text,Default}) ->
+    {hframe,[{label,Text},{vradio,List,askdialog_e_mval(Default,List)}]};
+askdialog_e({menu,{vradio,List},Text,Default,C}) ->
+    {hframe,[{label,Text},{vradio,List,askdialog_e_mval(Default,List),C}]};
+askdialog_e({menu,{hradio,List},Text,Default}) ->
+    {hframe,[{label,Text},{hradio,List,askdialog_e_mval(Default,List)}]};
+askdialog_e({menu,{hradio,List},Text,Default,C}) ->
+    {hframe,[{label,Text},{hradio,List,askdialog_e_mval(Default,List),C}]};
+askdialog_e({checkbox,_,Text,Default}) ->
+    {Text, Default};
+askdialog_e({checkbox,_,Text,Default,C}) ->
+    {Text, Default, C};
+askdialog_e({browse,_,Text,Default}) ->
+    {hframe,[{label,Text},{button,{text,askdialog_e_bval(Default),[]}}]};
+askdialog_e({browse,_,Text,Default,C}) ->
+    {hframe,[{label,Text},{button,{text,askdialog_e_bval(Default),C}}]};
+askdialog_e({adv_params,_,_}=Tuple) ->
+    advp_merge_vals(Tuple).
+
+%% Adjust the default value if it doesn't appear in the
+%% list.
+%%
+askdialog_e_mval(Default,List) ->
+    Atoms = [V || {_,V} <- List],
+    case lists:member(Default, Atoms) of
+        true ->
+            Default;
+        _ ->
+            [V1|_] = Atoms,
+            V1
+    end.
+
+%% Adjust the browse default value if it isn't a string.
+%%
+askdialog_e_bval(Str)
+  when is_binary(Str) ->
+    binary_to_list(Str);
+askdialog_e_bval(Str)
+  when is_list(Str) ->
+    binary_to_list(iolist_to_binary(Str));
+askdialog_e_bval(_) ->
+    "".
+
+%% Merge list of values with adv_param dialog term.
+%%
+advp_merge_vals({adv_params,Tuple,Vals}) ->
+    advp_m_vals(Tuple,maps:from_list(Vals)).
+advp_m_vals(List,Vals)
+  when is_list(List)->
+    [ advp_m_vals(A,Vals) || A <- List];
+advp_m_vals(Tuple,Vals)
+  when is_tuple(Tuple)->
+    List = tuple_to_list(Tuple),
+    list_to_tuple([ advp_m_vals(A,Vals) || A <- List]);
+advp_m_vals(Atom,Vals)
+  when is_atom(Atom) ->
+    case maps:find(Atom,Vals) of
+        {ok, Val} -> Val;
+        _ -> Atom
+    end;
+advp_m_vals(Anything,_Vals) ->
+    Anything.
 
 
 %% Start and run a script and get the return value
@@ -363,7 +405,7 @@ run_script_w_preview(_ScriptType, none, _Settings) ->
 
 run_script_w_preview_1(PID) ->
     case run_script_getting_data_once() of
-        {[[{atom,<<"ok">>}|_]|_], _} ->
+        {[[ok|_]|_], _} ->
             PID ! next,
             {ok, fun
                 ({run, ScriptParams, MoreParams, DefaultReturn}) ->
@@ -373,12 +415,12 @@ run_script_w_preview_1(PID) ->
                     receive
                         exited -> ok
                     after 20 ->
-                        io:format("ERROR: Did not recv 'exited'~n", []),
+                        err("Did not recv 'exited'"),
                         ok
                     end
             end};
         Returned ->
-            io:format("ERROR: Returned to run_script_1=~p~n", [Returned]),
+            err(io_lib:format("Returned to run_script_1=~p", [Returned])),
             {error, {unexpected, Returned}}
     end.
 
@@ -393,7 +435,7 @@ run_script_1(ScriptParams, MoreParams, DefaultReturn, PID) ->
             PID ! next,
             Tuplefied = run_script_tuplefy(Lisp),
             if ShowTupleDebug =:= true ->
-                    io:format("Tuplefied=~p~n", [Tuplefied]);
+                    io:format("Tuple:~p~n", [Tuplefied]);
                 true -> ok
             end,
             {ok, Tuplefied}
@@ -512,26 +554,39 @@ info_dialog(Title, [C|_]=Str)
 %% strings and numbers, so if a list has a symbol as its first item,
 %% we will tuple it ourselves.
 %%
-run_script_tuplefy({string, BString1}) when is_binary(BString1) ->
+run_script_tuplefy({string, BString1})
+  when is_binary(BString1) ->
     unbinstr(BString1);
-run_script_tuplefy({{atom, Atom1},Val}) when is_binary(Atom1) ->
+run_script_tuplefy({{atom, Atom1},Val})
+  when is_binary(Atom1) ->
     {list_to_atom(unbinstr(Atom1)), run_script_tuplefy(Val)};
-run_script_tuplefy([{atom, <<"!list">>}]) ->
+run_script_tuplefy(['!list']) ->
     [];
 %% Specifies this is actually a list of atoms.
-run_script_tuplefy([{atom, <<"!list">>}, {atom, TupleName} | Everything])
-  when is_binary(TupleName) ->
-    [list_to_atom(unbinstr(TupleName)) | run_script_tuplefy_args(Everything)];
-run_script_tuplefy([{atom, TupleName} | Everything])
-  when is_binary(TupleName) ->
-    list_to_tuple([list_to_atom(unbinstr(TupleName)) | run_script_tuplefy_args(Everything)]);
+run_script_tuplefy(['!list', Atom | Everything])
+  when is_atom(Atom) ->
+    [Atom | run_script_tuplefy_args(Everything)];
+run_script_tuplefy([ok, Tuple])
+  when is_list(Tuple) ->
+    {ok, run_script_tuplefy(Tuple)};
+run_script_tuplefy([TupleName | Everything])
+  when is_atom(TupleName) ->
+    case is_wings_rec(TupleName, length(Everything)) of
+        true ->
+            list_to_tuple([TupleName | run_script_tuplefy_args(Everything)]);
+        false ->
+            [TupleName | run_script_tuplefy_args(Everything)]
+    end;
 run_script_tuplefy(Tuple)
   when is_tuple(Tuple),
        is_tuple(element(1, Tuple)),
        element(1,element(1,Tuple)) =:= atom  ->
     run_script_tuplefy(tuple_to_list(Tuple));
-run_script_tuplefy([TupleName | Everything]) when is_binary(TupleName) ->
-    list_to_tuple([list_to_atom(unbinstr(TupleName)) | run_script_tuplefy_args(Everything)]);
+run_script_tuplefy([TupleName | Everything])
+  when is_binary(TupleName) ->
+    list_to_tuple(
+        [list_to_atom(unbinstr(TupleName))
+        | run_script_tuplefy_args(Everything)]);
 run_script_tuplefy([NonSymbol | _]=List)
   when is_number(NonSymbol);
        is_tuple(NonSymbol);
@@ -545,39 +600,33 @@ run_script_tuplefy(Unk) ->
 run_script_tuplefy_args([]) -> [];
 run_script_tuplefy_args([A | R]) ->
     [run_script_tuplefy(A) | run_script_tuplefy_args(R)].
+
+
+is_wings_rec(we, 17) -> true;
+is_wings_rec(array, 4) -> true;
+is_wings_rec(edge, 8) -> true;
+
+is_wings_rec(e3d_transf, 2) -> true;
+is_wings_rec(e3d_face, 7) -> true;
+is_wings_rec(e3d_mesh, 8) -> true;
+is_wings_rec(e3d_object, 4) -> true;
+is_wings_rec(e3d_file, 4) -> true;
+is_wings_rec(e3d_image, 10) -> true;
+
+is_wings_rec(new_shape, 3) -> true;
+
+is_wings_rec(_, _) -> false.
     
 get_script_pid(ScriptType_S, Settings) ->
-    case ScriptType_S of
-        "scm" -> RunnerPIDAtom = shape_from_scripts_script_runner_scm;
-        "py"  -> RunnerPIDAtom = shape_from_scripts_script_runner_py;
-        _     -> RunnerPIDAtom = list_to_atom(
-                    "shape_from_scripts_script_runner_" ++ ScriptType_S)
-    end,
+    RunnerPIDAtom = list_to_atom(
+        "shape_from_scripts_script_runner_" ++ ScriptType_S),
     case whereis(RunnerPIDAtom) of
         undefined ->
             %% The init folder contain code that runs before our scripts
             InitScriptsDir = filename:absname(code:where_is_file(
                 atom_to_list(?MODULE) ++ ?PATH_INIT_POSTFIX)),
-            case ScriptType_S of
-                "scm" ->
-                    {InterpreterNameOnly, Interpreter} = scm_auto_fill_int_path(
-                        proplists:get_value(setting_scm_int_path, Settings, "")),
-                    Arguments = scm_auto_fill_arguments(InterpreterNameOnly,
-                        string:split(proplists:get_value(setting_scm_arguments, Settings, ""), " ", all),
-                        InitScriptsDir),
-                    InitFile = filename:join(InitScriptsDir, "init.scm");
-                
-                "py"  ->
-                    Interpreter = py_auto_fill_intpath(
-                        proplists:get_value(setting_py_int_path, Settings, "")),
-                    Arguments   = [],
-                    InitFile = filename:join(InitScriptsDir, "init.py");
-                
-                _Other ->
-                    Interpreter = none,
-                    Arguments = [],
-                    InitFile = ""
-            end,
+            {Interpreter, Arguments, InitFile} =
+                scripting_shapes_e:script_interp(ScriptType_S, Settings, InitScriptsDir),
             case Interpreter of
                 none ->
                     {error, no_interpreter};
@@ -612,9 +661,8 @@ run_script_runner(Interpreter, Arguments, InitFile) ->
         run_script_runner_loop(Port)
     catch
         error:enoent ->
-            io:format("~p" ++
-                ?__(1,"could not run script interpreter:")++" ~s~n",
-                [?MODULE, Interpreter])
+            err(io_lib:format(?__(1,"could not run script interpreter:")++" ~s",
+                [Interpreter]))
     end.
 run_script_runner_loop(Port) ->
     receive
@@ -639,7 +687,7 @@ run_script_runner_loop(Port) ->
         next ->
             run_script_runner_loop(Port);
         M ->
-            io:format("Unexp=~p~n", [M]),
+            io:format("~p: Unexpected ret: ~p~n", [?MODULE,M]),
             run_script_runner_loop(Port)
     end.
 run_script_runner_inner_loop(Port, RetPID, StartedL, LAcc) ->
@@ -660,8 +708,8 @@ run_script_runner_inner_loop(Port, RetPID, StartedL, LAcc) ->
                 ?DEBUG_FMT(" ** ~p~n", [OutP]),
                 port_command(Port, OutP)
             catch
-                _:Error ->
-                    io:format("ERROR: ~p~n", [Error]),
+                _:Error:StTr ->
+                    err(io_lib:format("~p~nStTr:~n~p", [Error, StTr])),
                     port_command(Port, <<"(error output_error)">>)
             end,
             run_script_runner_inner_loop(Port, RetPID, StartedL, LAcc);
@@ -675,14 +723,14 @@ run_script_runner_inner_loop(Port, RetPID, StartedL, LAcc) ->
                     RetPID ! {reply, self(), scm_parse(SReply)},
                     run_script_runner_inner_loop(Port, RetPID, false, []);
                 {eol, SReply} when StartedL =:= false ->
-                    io:format("DEBUG: ~s~n", [SReply]),
+                    scr_debug(SReply),
                     run_script_runner_inner_loop(Port, RetPID, false, []);
                     
                 %% Longer lines are split into chunks
                 {eol, SReply} when StartedL =:= true ->
                     case LAcc of
                         debug ->
-                            io:format("DEBUG: ~s~n", [SReply]),
+                            scr_debug(SReply),
                             run_script_runner_inner_loop(Port, RetPID, false, []);
                         
                         _ ->
@@ -698,7 +746,7 @@ run_script_runner_inner_loop(Port, RetPID, StartedL, LAcc) ->
                 {noeol, SReply} when StartedL =:= true ->
                     case LAcc of
                         debug ->
-                            io:format("DEBUG: ~s~n", [SReply]),
+                            scr_debug(SReply),
                             run_script_runner_inner_loop(Port, RetPID, StartedL, LAcc);
                         _ ->
                             run_script_runner_inner_loop(Port, RetPID, true, [SReply | LAcc])
@@ -716,7 +764,7 @@ run_script_runner_inner_loop(Port, RetPID, StartedL, LAcc) ->
             end,
             RetPID ! exited;
         Unk ->
-            io:format("Unexpected=~p~n", [Unk]),
+            io:format("~p: Unexpected ret: ~p~n", [?MODULE, Unk]),
             run_script_runner_inner_loop(Port, RetPID, StartedL, LAcc)
     after 60000 ->
         io:format(?__(2, "NOTE: Closing script due to timeout") ++ "~n", []),
@@ -725,83 +773,15 @@ run_script_runner_inner_loop(Port, RetPID, StartedL, LAcc) ->
     end.
 send_to_scr_port(Port, L, RetPID) ->
     try
+%io:format("L=~p~n",[L]),
         OutP = iolist_to_binary([write_scm(L), <<"\n">>]),
+%io:format("OutP=~p~n",[OutP]),
         port_command(Port, OutP)
     catch
-        _:Error ->
-            io:format("ERROR: ~p", [Error]),
+        _:Error:StTr ->
+            err(io_lib:format("~p~nStTr:~n~p", [Error, StTr])),
             RetPID ! exited,
             exit(error)
-    end.
-
-
-
-find_first_interpreter(_AutoSetting, List) ->
-    Found = find_first_interpreter_1(List),
-    Found.
-find_first_interpreter_1([TryCmd | List]) ->
-    case os:find_executable(TryCmd) of
-        Found when is_list(Found) -> TryCmd;
-        false ->
-            find_first_interpreter_1(List)
-    end;
-find_first_interpreter_1([]) ->
-    "".
-
-scm_auto_fill_int_path(Str) ->
-    case Str of
-        "" ->
-            Found = find_first_interpreter(setting_autointrp_scm, [
-                "gosh",
-                "csi"
-            ]),
-            {Found, Found};
-        _ ->
-            Str,
-            NameOnly = filename:basename(filename:rootname(Str)),
-            {NameOnly, Str}
-    end.
-scm_auto_fill_arguments(Interpreter, Extra, BaseDir) ->
-    case Extra of
-        [[]] ->
-            Extra_1 = [];
-        _ ->
-            Extra_1 = Extra
-    end,
-    case Interpreter of
-        "csi" ->
-            %% Required arguments for Chicken Scheme interpreter (csi)
-            File = filename:absname("init_env_csi.scm", BaseDir),
-            File_1 = lists:flatten(string:replace(File, "\\", "\\\\", all)),
-            File_2 = lists:flatten(string:replace(File_1, "\"", "\\\"", all)),
-            [
-                "-q", "-n", "-b",
-                "-eval", "(load \"" ++ File_2 ++ "\")"
-                | Extra_1
-            ];
-        "gosh" ->
-            %% Required arguments for Gauche shell (gosh)
-            [
-                "-q", "-b",
-                "-A" ++ BaseDir,
-                "-l" ++ "init_env_gauche.scm"
-                | Extra_1
-            ];
-        _ ->
-            Extra_1
-    end.
-py_auto_fill_intpath(Str) ->
-    case Str of
-        "" ->
-            find_first_interpreter(setting_autointrp_py, [
-                "python",
-                "python38",
-                "python36",
-                "python34",
-                "python32"
-            ]);
-        _ ->
-            Str
     end.
 
 
@@ -809,7 +789,7 @@ py_auto_fill_intpath(Str) ->
 %% Select Script 
 %%
 
--spec scripts_menu_select_plugin([filename:filename()], wings_op_mode()) ->
+-spec scripts_menu_select_plugin([file:filename_all()], wings_op_mode()) ->
         any().
 scripts_menu_select_plugin(ScriptDirs, WingsOpMode) ->
     Parent = wings_dialog:get_dialog_parent(),
@@ -920,10 +900,17 @@ dlg_select_script_do_init(Config) ->
     Result.
 
 
-script_dirs(A) -> 
+%% Get a list of paths for scripts.
+%%
+script_dirs(DirsSetting) -> 
+    Str = wpa:pref_get(?MODULE, DirsSetting, ""),
+    scripting_shapes_e:extra_script_dirs() ++
     lists:filter(fun ("") -> false; (_) -> true end,
-        [ string:trim(A1) || A1 <- string:tokens(A, "\r\n") ]).
+        [ string:trim(A1) || A1 <- string:tokens(Str, "\r\n") ]).
 
+
+%% Make paths shorter for the UI
+%%
 not_the_full_path(A) ->
     B = lists:reverse(filename:split(A)),
     case B of
@@ -947,8 +934,8 @@ not_the_full_path(A) ->
             lists:flatten(io_lib:format("[~s] ~s/~s", [Within3, Within2, Within1]))
     end.
     
--spec dlg_select_script_refresh([filename:filename()], wings_op_mode(),
-        any(), wx:wxobject()) -> ok.
+-spec dlg_select_script_refresh([file:filename_all()], wings_op_mode(),
+        any(), wx:wx_object()) -> ok.
 dlg_select_script_refresh(ScriptDirs, WingsOpMode, ScriptTable, ScriptList) ->
     wxTreeCtrl:deleteAllItems(ScriptList),
     ERoot = wxTreeCtrl:addRoot(ScriptList, "*"),
@@ -974,7 +961,7 @@ script_list_add(ScriptTable, ScriptList, ParentNode, Name, ScriptFile, WSCRFile,
     ets:insert(ScriptTable, {{script, Elm}, {Name, ScriptFile, WSCRFile, ScriptType, ScriptDesc}}).
 
 dlg_select_script_insert_txt(E, Txt) ->
-    Sty_nrm = wxTextAttr:new({0,0,0}),
+    Sty_nrm = wxTextAttr:new(),
     Eb = wxTextCtrl:getLastPosition(E),
     wxTextCtrl:appendText(E, Txt),
     wxTextCtrl:setStyle(E, Eb, wxTextCtrl:getLastPosition(E), Sty_nrm),
@@ -1000,8 +987,8 @@ dlg_select_script_show_info(ScriptTable, InfoBox, Btnokay, Indx) ->
             dlg_select_script_display_about_details(InfoBox, Name, ScriptFile, WSCRFile, ScriptType, ScriptDesc)
     end.
 
--spec read_script_dirs([filename:filename()], wings_op_mode()) ->
-        [{filename:filename(), [filename:filename()]}].
+-spec read_script_dirs([file:filename_all()], wings_op_mode()) ->
+        [{file:filename_all(), [file:filename_all()]}].
 read_script_dirs(ScriptDirs, WingsOpMode) ->
     read_script_dirs(ScriptDirs, WingsOpMode, []).
 read_script_dirs([], _, OList) -> lists:reverse(OList);
@@ -1014,8 +1001,8 @@ read_script_dirs([Path | ScriptDirs], WingsOpMode, OList) ->
     end,
     read_script_dirs(ScriptDirs, WingsOpMode, [{Path, LResults} | OList]).
 
--spec iterate_filenames([filename:filename()], filename:filename(),
-        wings_op_mode()) -> {ok, [filename:filename()]}.
+-spec iterate_filenames([file:filename_all()], file:filename_all(),
+        wings_op_mode()) -> {ok, [file:filename_all()]}.
 iterate_filenames([FlN | Filenames], Path, WingsOpMode) ->
     {ok, iterate_filenames([FlN | Filenames], Path, WingsOpMode, [])}.
 iterate_filenames([], _, _, OList) -> lists:reverse(OList);
@@ -1053,8 +1040,8 @@ iterate_filenames_1(_, _Filenames, _Path, WingsOpMode, OList, FlN, FullFilename)
 
 
 
--spec read_script_info_file(filename:filename(), wings_op_mode()) ->
-        error | {ok, {filename:filename(), string(), string(), string()}}.
+-spec read_script_info_file(file:filename_all(), wings_op_mode()) ->
+        error | {ok, {file:filename_all(), string(), string(), string()}}.
 read_script_info_file(FlN, WingsOpMode) ->
     NameOnly = string:substr(FlN, 1, string:rchr(FlN, $.)-1),
     case file:read_file(FlN) of
@@ -1092,17 +1079,12 @@ read_script_info_file(FlN, WingsOpMode) ->
                     end,
                     case WSCRType_0 of
                         detect ->
-                            case lists:concat(lists:map(fun(T) ->
-                                ScriptFound_0 = NameOnly ++ "." ++ T,
-                                case file:read_file_info(ScriptFound_0) of
-                                    {ok, _} -> [T];
-                                    _       -> []
-                                end
-                            end, ["py", "scm"])) of
+                            case file_of_this_type(NameOnly)
+                            of
                                 [FoundType | _] ->
                                     WSCRType = FoundType,
                                     ScriptFound = NameOnly ++ "." ++ FoundType;
-                                []          ->
+                                [] ->
                                     WSCRType = none,
                                     ScriptFound = none
                             end;
@@ -1119,6 +1101,22 @@ read_script_info_file(FlN, WingsOpMode) ->
         _ ->
             error
     end.
+
+file_of_this_type(NameOnly) ->
+    AllEng = scripting_shapes_e:all_engines(),
+    lists:concat(
+        lists:map(file_of_this_type_1(NameOnly),
+            [Eng || {Eng,_} <- AllEng])).
+
+file_of_this_type_1(NameOnly) ->
+    fun(T) ->
+        ScriptFound_0 = NameOnly ++ "." ++ T,
+        case file:read_file_info(ScriptFound_0) of
+            {ok, _} -> [T];
+            _       -> []
+        end
+    end.
+
     
 wscr_to_proplist(L) -> wscr_to_proplist(L, []).
 wscr_to_proplist([], O) -> orddict:from_list(lists:reverse(O));
@@ -1127,6 +1125,10 @@ wscr_to_proplist([[A1, A2] | R], O) when is_list(A1), is_list(A2) ->
 wscr_to_proplist([_ | R], O) ->
     wscr_to_proplist(R, O).
 
+
+-define(CR_ONLY(C), (C =:= 10 orelse C =:= 13)).
+-define(SPACE_ONLY(C), (C =:= 32 orelse C =:= 9)).
+-define(SPACE_CR(C), (?CR_ONLY(C) orelse ?SPACE_ONLY(C))).
 
 read_wscr_until_eol(<<C, R/binary>>) when C =:= $\n ->
     R;
@@ -1157,6 +1159,31 @@ read_wscr_content(<<C, R/binary>>=RInp, StrList, CWord, CLine, Lines)
             _  ->
                 read_wscr_content(RInp, StrList, [], [lists:reverse(CWord) | CLine], Lines)
         end;
+
+
+
+%% Advanced dialog structuring:
+%% adv_params begin
+%% {vframe,[
+%%  ], [{title, ?__("Test"))}]}
+%% end
+read_wscr_content(<<WS,$b,$e,$g,$i,$n,CR,Bin/binary>>, StrList, [], CLine, Lines)
+  when ?SPACE_CR(WS), ?CR_ONLY(CR) ->
+    {A, Bin_1} = parse_advparam(Bin, StrList),
+    read_wscr_content(Bin_1, StrList, [], [A|CLine], Lines);
+read_wscr_content(<<WS,$b,$e,$g,$i,$n,CR,_/binary>>=RInp, StrList, CWord, CLine, Lines)
+  when ?SPACE_CR(WS), ?CR_ONLY(CR) ->
+    read_wscr_content(RInp, StrList, [], [lists:reverse(CWord) | CLine], Lines);
+
+read_wscr_content(<<DQ,DQ,DQ, Bin/binary>>, StrList, [], CLine, Lines)
+  when DQ =:= 34 ->
+    {A, Bin_1} = advparam_mstr(Bin),
+    read_wscr_content(Bin_1, StrList, [], [A|CLine], Lines);
+read_wscr_content(<<DQ,DQ,DQ, _/binary>>=RInp, StrList, CWord, CLine, Lines)
+  when DQ =:= 34 ->
+    read_wscr_content(RInp, StrList, [], [lists:reverse(CWord) | CLine], Lines);
+
+
 %% String localized, the parser will use the string in StrList indicated by
 %% the first argument integer, or the second argument is used as the string
 %% if not found
@@ -1167,15 +1194,15 @@ read_wscr_content(<<$?, $_, $_, C, R/binary>>=RInp, StrList, CWord, CLine, Lines
                 {LocStrID, Str, R_1} = read_wscr_string_locale(R),
                 case orddict:find(LocStrID, StrList) of
                     {ok, StrTranslated} ->
-                        read_wscr_content(R_1, StrList, CWord, [StrTranslated | CLine], Lines);
+                        read_wscr_content(R_1, StrList, [], [StrTranslated | CLine], Lines);
                     _ ->
-                        read_wscr_content(R_1, StrList, CWord, [Str | CLine], Lines)
+                        read_wscr_content(R_1, StrList, [], [Str | CLine], Lines)
                 end;
             _  ->
                 read_wscr_content(RInp, StrList, [], [lists:reverse(CWord) | CLine], Lines)
         end;
 read_wscr_content(<<C, R/binary>>, StrList, CWord, CLine, Lines)
-  when C =:= 32; C =:= 9 ->
+  when ?SPACE_ONLY(C) ->
         case CWord of
             [] ->
                 read_wscr_content(R, StrList, [], CLine, Lines);
@@ -1206,15 +1233,15 @@ read_wscr_content(<<C, R/binary>>=RInp, StrList, CWord, CLine, Lines)
                     [lists:reverse(CWord) | CLine], Lines)
         end;
 read_wscr_content(<<C, R/binary>>, StrList, [], [], Lines)
-  when C =:= 10; C =:= 13 ->
+  when ?CR_ONLY(C) ->
         read_wscr_content(R, StrList, [],
             [], Lines);
 read_wscr_content(<<C, R/binary>>, StrList, [], CLine, Lines)
-  when C =:= 10; C =:= 13 ->
+  when ?CR_ONLY(C) ->
         read_wscr_content(R, StrList, [],
             [], [lists:reverse(CLine) | Lines]);
 read_wscr_content(<<C, _/binary>>=RInp, StrList, CWord, CLine, Lines)
-  when C =:= 10; C =:= 13 ->
+  when ?CR_ONLY(C) ->
         read_wscr_content(RInp, StrList, [],
             [lists:reverse(CWord) | CLine], Lines);
 read_wscr_content(<<C, R/binary>>, StrList, CWord, CLine, Lines) ->
@@ -1232,6 +1259,10 @@ read_wscr_string_locale(R) -> read_wscr_string_locale(R, 1, [], []).
 read_wscr_string_locale(<<C, R/binary>>, 1, Digits, Str)
   when C >= $0, C =< $9 ->
     read_wscr_string_locale(R, 1, [C | Digits], Str);
+read_wscr_string_locale(<<DQ,DQ,DQ, Bin/binary>>, 2, Digits, _)
+  when DQ =:= 34->
+    {Str, R_1} = advparam_mstr(Bin),
+    read_wscr_string_locale(R_1, 2, Digits, Str);
 read_wscr_string_locale(<<C, R/binary>>, 2, Digits, _)
   when C =:= 34 ->
     {Str, R_1} = read_wscr_string(R),
@@ -1240,7 +1271,7 @@ read_wscr_string_locale(<<C, R/binary>>, N, Digits, Str)
   when C =:= $, ->
     read_wscr_string_locale(R, N+1, Digits, Str);
 read_wscr_string_locale(<<C, R/binary>>, N, Digits, Str)
-  when C =:= 32; C =:= 9; C =:= 10; C =:= 13 ->
+  when ?SPACE_CR(C) ->
     read_wscr_string_locale(R, N, Digits, Str);
 read_wscr_string_locale(<<C, R/binary>>, 2, Digits, Str)
   when C >= 41 -> %% Closing parenthesis
@@ -1251,7 +1282,111 @@ read_wscr_string_locale(<<C, R/binary>>, 2, Digits, Str)
     {LocStrID, Str, R};
 read_wscr_string_locale(_, _, _, _) ->
     {error, not_formatted_right}.
-    
+
+
+parse_advparam(A,StrList) ->
+    erlang:put({?MODULE,expr_idx}, 0),
+    Ret = parse_advparam(A, StrList, []),
+    erlang:erase({?MODULE,expr_idx}),
+    Ret.
+parse_advparam(<<WS,$e,$n,$d,$.,CR, Bin/binary>>, StrList, OL)
+  when ?CR_ONLY(CR), ?SPACE_CR(WS) ->
+    Str_0 = string:trim(lists:reverse(OL)),
+    {Exprs, Str} = advparam_bp1(Str_0),
+    {ok, Toks_0, _} = erl_scan:string(Str ++ "."),
+    Toks = advparam_bp2(Toks_0, StrList),
+    {ok, Term} = erl_parse:parse_term(Toks),
+    {{adv_term, Term, Exprs}, Bin};
+parse_advparam(<<C, Bin/binary>>, StrList, OL) ->
+    parse_advparam(Bin, StrList, [C|OL]).
+
+%% Substitute "%[<expr>]" with query expressions
+advparam_bp1(Str) ->
+    advparam_bp1(Str, [], []).
+advparam_bp1([$%,$[|Str], OL, OL2) ->
+    {IStr_0, Str_1} = advparam_bp1_1(Str),
+    {Exprs, IStr} = advparam_make_expr(IStr_0),
+    advparam_bp1(Str_1, lists:reverse(IStr) ++ OL, [Exprs|OL2]);
+advparam_bp1([DQ|Str], OL, OL2)
+  when DQ =:= 34 ->
+    {InsideRev, Str_1} = advparam_bp1_str(Str),
+    advparam_bp1(Str_1, [DQ] ++ InsideRev ++ [DQ|OL], OL2);
+advparam_bp1([C|Str], OL, OL2) ->
+    advparam_bp1(Str, [C|OL], OL2);
+advparam_bp1([], OL, OL2) ->
+    {lists:reverse(OL2),lists:reverse(OL)}.
+
+advparam_bp1_1(Str) ->
+    advparam_bp1_1(Str, []).
+advparam_bp1_1([DQ|Str], OL)
+  when DQ =:= 34 ->
+    {InsideRev, Str_1} = advparam_bp1_str(Str),
+    advparam_bp1_1(Str_1, [DQ] ++ InsideRev ++ [DQ|OL]);
+advparam_bp1_1([$[|Str], OL) ->
+    {Inside, Str_1} = advparam_bp1_1(Str),
+    advparam_bp1_1(Str_1, [$]] ++ Inside ++ [$[|OL]);
+advparam_bp1_1([$]|Str], OL) ->
+    {lists:reverse(OL), Str};
+advparam_bp1_1([C|Str], OL) ->
+    advparam_bp1_1(Str, [C|OL]);
+advparam_bp1_1([], OL) ->
+    {lists:reverse(OL), []}.
+
+advparam_bp1_str(Str) ->
+    advparam_bp1_str(Str, []).
+advparam_bp1_str([$\\,DQ|Str], OL)
+  when DQ =:= 34 ->
+    advparam_bp1_str(Str, [DQ,$\\|OL]);
+advparam_bp1_str([DQ|Str], OL)
+  when DQ =:= 34 ->
+    {OL, Str};
+advparam_bp1_str([C|Str], OL) ->
+    advparam_bp1_str(Str, [C|OL]).
+
+
+%% Substitute locale strings    
+advparam_bp2(Toks_0, StrList) ->
+    advparam_bp2(Toks_0, StrList, []).
+advparam_bp2([{'?',_},{var,_,'__'},{'(',_},{integer,_,LocStrID},
+             {',',A}|Toks_0], StrList, OL) ->
+    {StrConcat, Toks_1} = advparam_bp2_1(Toks_0),
+    Str = case orddict:find(LocStrID, StrList) of
+        {ok, StrTranslated} ->
+            StrTranslated;
+        _ ->
+            StrConcat
+    end,
+    T = {string,A,Str},
+    advparam_bp2(Toks_1, StrList, [T|OL]);
+advparam_bp2([T|Toks_0], StrList, OL) ->
+    advparam_bp2(Toks_0, StrList, [T|OL]);
+advparam_bp2([], _StrList, OL) ->
+    lists:reverse(OL).
+
+advparam_bp2_1(Toks) ->
+    advparam_bp2_1(Toks, []).
+advparam_bp2_1([{string,_,Str}|Toks], OL) ->
+    advparam_bp2_1(Toks, [Str|OL]);
+advparam_bp2_1([{')',_}|Toks], OL) ->
+    {lists:append(lists:reverse(OL)), Toks}.
+
+
+advparam_mstr(A) ->
+    advparam_mstr(A, []).
+advparam_mstr(<<CR,DQ,DQ,DQ, Bin/binary>>, OL)
+  when ?CR_ONLY(CR), DQ =:= 34 ->
+    Str = string:trim(lists:reverse(OL)),
+    {Str, Bin};
+advparam_mstr(<<C, Bin/binary>>, OL) ->
+    advparam_mstr(Bin, [C|OL]).
+
+advparam_make_expr(Expr) ->
+    Num = erlang:get({?MODULE,expr_idx}),
+    erlang:put({?MODULE,expr_idx},Num+1),
+    Ident = "%%" ++ integer_to_list(Num),
+    {{list_to_atom(Ident), Expr}, "'" ++ Ident ++ "'"}.
+
+
 %% Get the lang code.
 current_lang_code() ->
     atom_to_list(get(wings_lang)).
@@ -1301,87 +1436,9 @@ read_wscr_includes_shorthands(InclFile_0, WSCRFile) ->
 
 
 %%
-%% Script Preference Dialog 
+%% wx UI
 %%
 
-init_dlg_script_preference(Config, Defaults) -> wx:batch(fun() -> dlg_script_preference_do_init(Config, Defaults) end).
-dlg_script_preference_do_init(Config, Defaults) ->
-    Parent = proplists:get_value(parent, Config),
-
-    F = wxDialog:new(Parent, ?wxID_ANY, ?__(1,"Script Preference"), [ {size, {600, 500}}, {style, ?wxDEFAULT_DIALOG_STYLE bor ?wxRESIZE_BORDER} ]),
-    MainSizer = wxBoxSizer:new(?wxVERTICAL),
-
-    Frameparts = wxPanel:new(F, []),
-    wxBoxSizer:add(MainSizer, Frameparts, [{flag, ?wxEXPAND bor ?wxALL}, {border, 5}, {proportion, 1}]),
-    Frameparts_sizer = wxBoxSizer:new(?wxVERTICAL),
-    wxPanel:setSizer(Frameparts, Frameparts_sizer),
-    
-    ChkEnableScripts = dlg_check_box({Frameparts, Frameparts_sizer}, ?__(2,"Enable Scripts"),
-        dlg_script_pref_value(setting_enable, Config, Defaults)),
-    dlg_spacer({Frameparts, Frameparts_sizer}, 8),
-    
-    SetTabs = wxNotebook:new(Frameparts, ?wxID_ANY),
-    wxBoxSizer:add(Frameparts_sizer, SetTabs, [{flag, ?wxEXPAND bor ?wxALL}, {border, 5}, {proportion, 1}]),
-    
-    Elems = lists:append([
-        tab_panel(SetTabs, TabTitle, TF, Config, Defaults)
-    || {TabTitle, TF} <- [
-        {?__(3,"Shapes"), fun dlg_script_preference_do_init_page1/3},
-        {?__(4,"Commands"), fun dlg_script_preference_do_init_page2com/3},
-        {?__(5,"Import / Export"), fun dlg_script_preference_do_init_page2/3},
-        {?__(6,"Interpreters"), fun dlg_script_preference_do_init_page3/3},
-        {?__(8,"Debug"), fun dlg_script_preference_do_init_page5/3}
-    ]]) ++ [{setting_enable, ChkEnableScripts}],
-    
-    {_Btnokay, _BtnCancel} = dlg_button_bar({Frameparts, Frameparts_sizer}, F, ?__(9,"OK"), ?__(10,"Cancel")),
-
-    wxDialog:setSizer(F, MainSizer),
-    wxBoxSizer:recalcSizes(Frameparts_sizer),
-    
-    
-    wings_dialog:set_dialog_parent(F),
-    case wxDialog:showModal(F) of
-        ?wxID_OK ->
-            Result_Settings = 
-            [ {SettAtom, WxCntl:getValue(Handle)}
-                || {SettAtom, {WxCntl, Handle}} <- Elems ];
-        ?wxID_CANCEL ->
-            Result_Settings = 
-            [ {SettAtom,
-                case proplists:get_value(SettAtom, Config) of
-                    undefined -> proplists:get_value(SettAtom, Defaults);
-                    PrevVal -> PrevVal
-                end}
-                || {SettAtom, _} <- Elems ]
-    end,
-    
-    wings_dialog:reset_dialog_parent(F),
-    wxDialog:destroy(F),
-    Result_Settings.
-
-
-tab_panel(SetTabs, Label, Page, Config, Defaults) ->
-    FrameTab = wxPanel:new(SetTabs, []),
-    FrameTab_sizer = wxBoxSizer:new(?wxVERTICAL),
-    wxPanel:setSizer(FrameTab, FrameTab_sizer),
-    Ret = Page({FrameTab, FrameTab_sizer}, Config, Defaults),
-    wxNotebook:addPage(SetTabs, FrameTab, Label),
-    Ret.
-dlg_label_line({Frameparts, Frameparts_sizer}, LabelStr) ->
-    LabelCtl = wxStaticText:new(Frameparts, ?wxID_ANY, LabelStr),
-    wxBoxSizer:add(Frameparts_sizer, LabelCtl, [ {flag, ?wxALL}, {border, 5}]).
-dlg_text_line({Frameparts, Frameparts_sizer}, TextVal) ->
-    Ctl = wxTextCtrl:new(Frameparts, ?wxID_ANY),
-    wxBoxSizer:add(Frameparts_sizer, Ctl, [ {flag, ?wxEXPAND bor ?wxALL}, {border, 5}]),
-    wxTextCtrl:setValue(Ctl, TextVal),
-    {wxTextCtrl, Ctl}.
-dlg_check_box({Frameparts, Frameparts_sizer}, LabelStr, Val) ->
-    Ctl = wxCheckBox:new(Frameparts, ?wxID_ANY, LabelStr),
-    wxBoxSizer:add(Frameparts_sizer, Ctl, [ {flag, ?wxALL}, {border, 5}]),
-    wxCheckBox:setValue(Ctl, Val),
-    {wxCheckBox, Ctl}.
-dlg_spacer({_Frameparts, Frameparts_sizer}, N) -> 
-    wxBoxSizer:addSpacer(Frameparts_sizer, N).
 dlg_button_bar({Frameparts, Frameparts_sizer}, F, OkayLabelStr, CancelLabelStr) ->
     Buttonbar = wxPanel:new(Frameparts),
     Buttonbar_sizer = wxBoxSizer:new(?wxHORIZONTAL),
@@ -1398,98 +1455,324 @@ dlg_button_bar({Frameparts, Frameparts_sizer}, F, OkayLabelStr, CancelLabelStr) 
     wxBoxSizer:add(Buttonbar_sizer, BtnCancel),
     wxBoxSizer:add(Frameparts_sizer, Buttonbar, [ {flag, ?wxALL}, {border, 3}]),
     {Btnokay, BtnCancel}.
-dlg_multitext({Frameparts, Frameparts_sizer}, TextVal) ->
-    Ctl = wxTextCtrl:new(Frameparts, ?wxID_ANY,
-        [{style, ?wxTE_MULTILINE bor ?wxTE_BESTWRAP }]),
-    wxBoxSizer:add(Frameparts_sizer, Ctl, [{flag, ?wxEXPAND bor ?wxALL}, {border, 5}, {proportion, 3}]),
-    wxTextCtrl:setValue(Ctl, TextVal),
-    {wxTextCtrl, Ctl}.
-dlg_multiline({Frameparts, Frameparts_sizer}, LabelStr) ->
-    Aboutline2 = wxStaticText:new(Frameparts, ?wxID_ANY, LabelStr),
-    wxBoxSizer:add(Frameparts_sizer, Aboutline2, [ {flag, ?wxALL bor ?wxEXPAND}, {border, 5}, {proportion, 1}]).
 
 
-dlg_script_pref_value(SettAtom, Config, Defaults) ->
-    case proplists:get_value(SettAtom, Config) of
-        undefined ->
-            proplists:get_value(SettAtom, Defaults);
-        Val -> Val
+
+
+%%%
+%%% Script Preference Dialog
+%%%
+
+dlg_script_preference(St) ->
+    Pag_Shapes =
+        {?__(3,"Shapes"), {vframe, dlg_script_preference_paths(setting_paths_shapes)}},
+    Pag_Commands =
+        {?__(4,"Commands"), {vframe, dlg_script_preference_paths(setting_paths_commands)}},
+    Pag_Imp_Export =
+        {?__(5,"Import/Export"), {vframe, dlg_script_preference_paths(setting_paths_import_export)}},
+    Pag_Interpreters =
+        {?__(6,"Interpreters"), {vframe, dlg_script_preference_paths(interpreters)}},
+    Pag_Debug =
+        {?__(7,"Debug"),{vframe, dlg_script_preference_paths(setting_show_tuple)}},
+
+    Dialog =
+        [%{vframe, [
+            {?__(2,"Enable Scripts"), get_pref(setting_enable), [{key,setting_enable}]},
+            {vframe, [
+                {oframe, [
+                    Pag_Shapes,
+                    Pag_Commands,
+                    Pag_Imp_Export,
+                    Pag_Interpreters,
+                    Pag_Debug], 1, [{style, buttons}]}
+            ], [{key,pnl_script_pref}, {show,true}, {margin,false}]}
+         %]}
+        ],
+    wpa:dialog(?__(1,"Script Preference"), Dialog, fun(Attr) -> dlg_script_result(Attr, St) end).
+
+dlg_script_result(Attr0, St) ->
+    Defaults = get_user_prefs(get_defaults()),
+    Attr1 = pref_path_result([
+        setting_paths_shapes,
+        setting_paths_commands,
+        setting_paths_import_export], Attr0),
+    Attr = [{Key,proplists:get_value(Key,Attr1,DVal)} || {Key,DVal} <- Defaults],
+    set_user_prefs(Attr),
+    St.
+
+
+
+dlg_script_pref_eng(_, no_bin) -> [];
+dlg_script_pref_eng(Eng, HasArgs)
+  when is_boolean(HasArgs) ->
+    Atom = list_to_atom("setting_" ++ Eng ++ "_int_path"),
+    dlg_script_preference_path_item({int_path, Atom, Eng}, get_pref(Atom))
+    ++ dlg_script_pref_eng_1(Eng, HasArgs).
+
+dlg_script_pref_eng_1(_, false) -> [];
+dlg_script_pref_eng_1(Eng, true) ->
+    Atom = list_to_atom("setting_" ++ Eng ++ "_arguments"),
+    dlg_script_preference_path_item({arguments, Atom, Eng}, get_pref(Atom)).
+
+
+dlg_script_preference_paths(setting_show_tuple=Key) ->
+    ChkEnableShowTuple = get_pref(Key),
+    [{?__(4,"Enable Debug Return Data"), ChkEnableShowTuple, [{key,Key}]}];
+dlg_script_preference_paths(interpreters) ->
+    AllEng = scripting_shapes_e:all_engines(),
+    lists:append(
+        [ dlg_script_pref_eng(Eng, HasArgs)
+        || {Eng, HasArgs} <- AllEng]);
+dlg_script_preference_paths(Key) ->
+    Paths = get_pref(Key),
+    [{label, ?__(9,"Each script must have with it a file with the extension " ++
+                   ".wscr that contains its name, description and parameters.")},
+     panel] ++
+    dlg_script_preference_path_item(Key, Paths).
+
+dlg_script_preference_path_item(setting_paths_shapes=Key, Paths) ->
+    [{label, ?__(1,"Paths for Shape Scripts")},
+     pref_path_qs(Paths, Key, table_labels())
+     ];
+dlg_script_preference_path_item(setting_paths_commands=Key, Paths) ->
+    ChkEnableScriptsCommands = get_pref(setting_enable_commands),
+    [{label, ?__(2,"Paths for Commands Scripts")},
+     pref_path_qs(Paths, Key, table_labels()),
+     {?__(3,"Enable Scripts for Commands Menu"), ChkEnableScriptsCommands,
+        [{key,setting_enable_commands}]}
+    ];
+dlg_script_preference_path_item(setting_paths_import_export=Key, Paths) ->
+    ChkEnableScriptsImport = get_pref(setting_enable_import),
+    ChkEnableScriptsExport = get_pref(setting_enable_export),
+    [{label, ?__(4,"Paths for Import/Export Scripts")},
+     pref_path_qs(Paths, Key, table_labels()),
+     {?__(5,"Enable Scripts for Import Menu"), ChkEnableScriptsImport,
+        [{key,setting_enable_import}]},
+     {?__(6,"Enable Scripts for Export Menu"), ChkEnableScriptsExport,
+        [{key,setting_enable_export}]}
+    ];
+dlg_script_preference_path_item({int_path, Key, EngName}, Path) ->
+    [{label_column, [
+        {string:replace(?__(8,"% Interpreter Path"), "%", EngName),
+        {button, {text, Path, [{key,Key}, {width,30}, wings_job:browse_props()]}}}
+        ]}];
+dlg_script_preference_path_item({arguments, Key, EngName}, Path) ->
+    [{label_column, [
+        {string:replace(?__(9,"% Extra Interpreter Arguments"), "%", EngName),
+        {text, Path, [{key,Key}, {width,30}]}}
+        ]}].
+
+table_labels() ->
+    {?__(1,"Paths"),
+     ?__(2,"Add"),
+     ?__(3,"Edit"),
+     ?__(4,"Del")}.
+
+
+get_defaults() ->
+    AllEng = scripting_shapes_e:all_engines(),
+    Defaults = [
+        {setting_enable, true},
+        {setting_enable_commands, false},
+        {setting_enable_import, false},
+        {setting_enable_export, false},
+        {setting_paths_shapes, ""},
+        {setting_paths_commands, ""},
+        {setting_paths_import_export, ""},
+        {setting_show_tuple, false}
+    ],
+    get_defaults_conf(Defaults ++
+        lists:append(
+            [get_defaults_eng(Eng, HasArgs)
+            || {Eng, HasArgs} <- AllEng])).
+
+
+get_defaults_conf(List0) ->
+    Dir = filename:absname(code:where_is_file(
+        atom_to_list(?MODULE) ++ ?PATH_INIT_POSTFIX)),
+    case file:consult(filename:join(Dir, "defaults.conf")) of
+        {ok, List} ->
+            orddict:merge(
+                fun (_,V1,_) -> V1 end,
+                orddict:from_list(List),
+                orddict:from_list(List0));
+        _ ->
+            List0
     end.
-    
 
 
-dlg_script_preference_do_init_page1(FF, Config, Defaults) ->
-    dlg_label_line(FF, ?__(1,"Paths for Shape Scripts (one per line):")),
-    PathsBox = dlg_multitext(FF,
-        dlg_script_pref_value(setting_paths_shapes, Config, Defaults)),
-    
-    dlg_multiline(FF, ?__(2,"Each script must have with it a file with the "
-        "extension .wscr that contains its name, description and parameters.")),
-    dlg_spacer(FF, 8),
-    
-    [{setting_paths_shapes, PathsBox}].
-    
-    
-dlg_script_preference_do_init_page2com(FF, Config, Defaults) ->
-    dlg_label_line(FF, ?__(1,"Paths for Command Scripts (one per line):")),
-    PathsBox = dlg_multitext(FF,
-        dlg_script_pref_value(setting_paths_commands, Config, Defaults)),
-    
-    dlg_multiline(FF, ?__(2,"Each script must have with it a file with the "
-        "extension .wscr that contains its name, description and parameters.")),
-    dlg_spacer(FF, 8),
-    ChkEnableScriptsCommands = dlg_check_box(FF, ?__(3,"Enable Scripts for Commands Menu"),
-        dlg_script_pref_value(setting_enable_commands, Config, Defaults)),
-    dlg_spacer(FF, 8),
-    [{setting_paths_commands, PathsBox},
-     {setting_enable_commands, ChkEnableScriptsCommands}].
-    
+get_defaults_eng(_, no_bin) -> [];
+get_defaults_eng(Eng, HasArgs)
+  when is_boolean(HasArgs) ->
+    [{list_to_atom("setting_" ++ Eng ++ "_int_path"), ""}] ++
+    get_defaults_eng_1(Eng, HasArgs).
+
+get_defaults_eng_1(_, false) -> [];
+get_defaults_eng_1(Eng, true) ->
+    [{list_to_atom("setting_" ++ Eng ++ "_arguments"), ""}].
 
 
-dlg_script_preference_do_init_page2(FF, Config, Defaults) ->
-    dlg_label_line(FF, ?__(1,"Paths for Import/Export Scripts (one per line):")),
-    PathsBox = dlg_multitext(FF,
-        dlg_script_pref_value(setting_paths_import_export, Config, Defaults)),
-    
-    dlg_multiline(FF, ?__(2,"Each script must have with it a file with the "
-        "extension .wscr that contains its name, description and parameters.")),
-    dlg_spacer(FF, 8),
-    ChkEnableScriptsImport = dlg_check_box(FF, ?__(3,"Enable Scripts for Import Menu"),
-        dlg_script_pref_value(setting_enable_import, Config, Defaults)),
-    ChkEnableScriptsExport = dlg_check_box(FF, ?__(4,"Enable Scripts for Export Menu"),
-        dlg_script_pref_value(setting_enable_export, Config, Defaults)),
-    dlg_spacer(FF, 8),
-    [{setting_paths_import_export, PathsBox},
-     {setting_enable_import, ChkEnableScriptsImport},
-     {setting_enable_export, ChkEnableScriptsExport}].
-    
 
-dlg_script_preference_do_init_page3(FF, Config, Defaults) ->
-    dlg_label_line(FF, ?__(1,"Python Interpreter Path:")),
-    PathPyInt = dlg_text_line(FF,
-        dlg_script_pref_value(setting_py_int_path, Config, Defaults)),
-    dlg_spacer(FF, 3),
-    
-    dlg_label_line(FF, ?__(2,"Scheme Interpreter Path:")),
-    PathScmInt = dlg_text_line(FF,
-        dlg_script_pref_value(setting_scm_int_path, Config, Defaults)),
-    dlg_label_line(FF, ?__(3,"Scheme Extra Interpreter Arguments:")),
-    PathScmArguments = dlg_text_line(FF,
-        dlg_script_pref_value(setting_scm_arguments, Config, Defaults)),
-    dlg_spacer(FF, 3),
-    [{setting_py_int_path, PathPyInt},
-     {setting_scm_int_path, PathScmInt},
-     {setting_scm_arguments, PathScmArguments}].
+set_pref_defaults() ->
+    [wpa:pref_set_default(?MODULE,Key,Val) || {Key,Val} <- get_defaults()].
+
+get_pref(Key) ->
+    wpa:pref_get(?MODULE, Key).
+
+set_user_prefs(Attr) ->
+    wpa:pref_set(?MODULE, Attr).
+
+get_user_prefs(KeyDefs) when is_list(KeyDefs) ->
+    [{Key, wpa:pref_get(?MODULE, Key, Def)} || {Key, Def} <- KeyDefs].
 
 
-dlg_script_preference_do_init_page5(FF, Config, Defaults) ->
-    
-    ChkEnableShowTuple = dlg_check_box(FF, ?__(4,"Enable Debug Return Data"),
-        dlg_script_pref_value(setting_show_tuple, Config, Defaults)),
-    dlg_spacer(FF, 3),
-    
-    [{setting_show_tuple, ChkEnableShowTuple}].
+%%%
+%%%
 
+%%
+%%  Preference path qs for Scripting
+
+-define(USE_TABLE, true).
+-ifndef(USE_TABLE).
+
+%% For now: single line
+%%
+
+pref_path_qs(Paths, Key, _Label) ->
+    List0 = string:split(Paths,"\n",all),
+    List1 = [string:trim(A) || A <- List0],
+    Str = string:join(List1, ";"),
+    {text, Str, [{key,Key}, {width,30}]}.
+
+pref_path_result(PathConfigKeys, Attr0) ->
+    Set = sets:from_list(PathConfigKeys),
+    F = fun ({Key,Val}=Tuple) ->
+        case sets:is_element(Key, Set) of
+            true ->
+                List = string:split(Val,";",all),
+                {Key, string:join(pref_path_clean_path_list(List),"\n")};
+            _ ->
+                Tuple
+        end
+    end,
+    lists:map(F, Attr0).
+
+
+-else.
+
+%% New
+%%
+
+pref_path_qs(Paths, Key, {LabelTab, LabelAdd, LabelEdit, LabelDel}) ->
+    List0 = [string:trim(A) || A <- string:split(Paths,"\n",all)],
+    List1 = [A || A <- List0, length(A) > 0],
+    List2 = [{{A,A}} || A <- List1],
+    {vframe, [
+        {table, [{LabelTab}|List2],
+            [{key,{Key,table}},{max_rows,10},{col_widths,{50}},
+             {sel_style,single},{hook,fun pref_path_dlg_script_hook/3}]},
+        {hframe, [
+            %{button, 
+            {text, "", [{key,{Key,text}}, {width,30}]},%},  {dialog_type,dir_dialog}
+            {button, LabelAdd,  add,  [{key,{Key,add}},{hook,fun pref_path_dlg_script_hook/3}]},
+            {button, LabelEdit, edit, [{key,{Key,edit}},{hook,fun pref_path_dlg_script_hook/3}]},
+            {button, LabelDel,  del,  [{key,{Key,del}},{hook,fun pref_path_dlg_script_hook/3}]}
+         ]}
+    ]}.
+pref_path_dlg_script_hook(Key, _Val, Sto) ->
+    case Key of
+        {Tab,add} ->
+            NewPath = wings_dialog:get_value({Tab,text},Sto),
+            case wings_dialog:get_value({Tab,table},Sto) of
+                {_, List} when is_list(List), length(NewPath) > 0 ->
+                    Val1 = {[], List ++ [{{NewPath, NewPath}}]},
+                    wings_dialog:set_value({Tab,table},Val1,Sto),
+                    wings_dialog:set_value({Tab,text},"",Sto);
+                _ ->
+                    ok
+            end;
+        {Tab,edit} ->
+            NewPath = wings_dialog:get_value({Tab,text},Sto),
+            case wings_dialog:get_value({Tab,table},Sto) of
+                {[Sel], List} when is_integer(Sel), length(List) > Sel, length(NewPath) > 0 ->
+                    case lists:split(Sel,List) of
+                        {List1_1, [_|List2_1]} ->
+                            Val1 = {[Sel], List1_1++[{{NewPath, NewPath}}|List2_1]},
+                            wings_dialog:set_value({Tab,table},Val1,Sto);
+                        _ ->
+                            ok
+                    end;
+                {_, List} when is_list(List), length(NewPath) > 0 ->
+                    Val1 = {[], List ++ [{{NewPath, NewPath}}]},
+                    wings_dialog:set_value({Tab,table},Val1,Sto),
+                    wings_dialog:set_value({Tab,text},"",Sto);
+                _ ->
+                    ok
+            end;
+        {Tab,del} ->
+            case wings_dialog:get_value({Tab,table},Sto) of
+                {[Sel], List} when is_integer(Sel), length(List) > Sel ->
+                    case lists:split(Sel,List) of
+                        {List1_1, [_|List2_1]} ->
+                            Val1 = {[Sel], List1_1++List2_1},
+                            wings_dialog:set_value({Tab,table},Val1,Sto);
+                        _ ->
+                            ok
+                    end;
+                _ ->
+                    ok
+            end;
+        {Tab,table} ->
+            case wings_dialog:get_value({Tab,table},Sto) of
+                {[Sel], List} when is_integer(Sel), length(List) > Sel ->
+                    {{_, Path}} = lists:nth(Sel+1, List),
+                    wings_dialog:set_value({Tab,text},Path,Sto),
+                    ok;
+                _ ->
+                    ok
+            end
+    end,
+    ok.
+
+pref_path_result(PathConfigKeys, Attr0) ->
+    EntPaths = maps:from_list([{A,proplists:get_value({A,text}, Attr0, "")} || A <- PathConfigKeys]),
+    Set = sets:from_list(PathConfigKeys),
+    F = fun ({{Key,table},Val0}=Tuple) ->
+        case sets:is_element(Key, Set) of
+            true ->
+                {_Sel,Val} = Val0,
+                EntPath = maps:get(Key, EntPaths),
+                List1 = lists:append([[B || B <- string:split(P,";",all)] || {{_,P}} <- Val++[{{"",EntPath}}]]),
+                {Key, string:join(pref_path_clean_path_list([string:trim(P) || P <- List1]),"\n")};
+            _ ->
+                Tuple
+        end;
+        ({{_,text},_}) -> false;
+        (Tuple) -> Tuple
+    end,
+    [A || A <- lists:map(F, Attr0), A =/= false].
+
+
+%% Clean path list of empty strings and duplicates.
+%%
+pref_path_clean_path_list(List) ->
+    pref_path_clean_path_list(List,sets:new(),[]).
+pref_path_clean_path_list([],_,OL) ->
+    lists:reverse(OL);
+pref_path_clean_path_list([""|List],Seen,OL) ->
+    pref_path_clean_path_list(List,Seen,OL);
+pref_path_clean_path_list([Path|List],Seen,OL) ->
+    case sets:is_element(Path,Seen) of
+        true ->
+            pref_path_clean_path_list(List,Seen,OL);
+        _ ->
+            pref_path_clean_path_list(List,sets:add_element(Path,Seen),[Path|OL])
+    end.
+
+-endif.
+
+%%%
+%%%
 
 
 %%
@@ -1498,7 +1781,8 @@ dlg_script_preference_do_init_page5(FF, Config, Defaults) ->
 
 prepare_parameter_list_for_scm(List) ->
     lists:map(fun ({K, A1}) when is_atom(K) ->
-                      [{atom, list_to_binary(atom_to_list(K))}, prepare_parameter_list_for_scm([A1])];
+                      [A1_1] = prepare_parameter_list_for_scm([A1]),
+                      [{atom, list_to_binary(atom_to_list(K))}, A1_1];
                   (A1)  when is_binary(A1) -> {string, A1};
                   (Str) when is_list(Str) -> {string, Str};
                   (A1) -> A1
@@ -1589,6 +1873,9 @@ write_scm([true | AList], BList, false) ->
     write_scm(AList, [<<"#t">> | BList], true);
 write_scm([false | AList], BList, false) ->
     write_scm(AList, [<<"#f">> | BList], true);
+write_scm([A | AList], BList, false)
+  when is_atom(A) ->
+    write_scm(AList, [io_lib:format("~w", [A]) | BList], true);
 write_scm([A | AList], BList, false) when is_number(A) ->
     write_scm(AList, [io_lib:format("~w", [A]) | BList], true).
 
@@ -1638,7 +1925,7 @@ scm_parse(<<C, R/binary>>=RInp, List, Tok) when C =:= $) ->
             scm_parse(RInp, [bare_word(Tok) | List], [])
     end;
 scm_parse(<<C, R/binary>>=RInp, List, Tok)
-  when C =:= 32; C =:= 9; C =:= 10; C =:= 13 ->
+  when ?SPACE_CR(C) ->
     case Tok of
         [] -> scm_parse(R, List, []);
         _  -> scm_parse(RInp, [bare_word(Tok) | List], [])
@@ -1653,7 +1940,7 @@ scm_parse(<<C, R/binary>>, List, Tok) ->
 
 scm_parse_num(A) -> scm_parse_num(A, []).
 scm_parse_num(<<C, _/binary>>=R, Num_S0)
-  when C =:= 32; C =:= 9; C =:= $) ->
+  when ?SPACE_ONLY(C); C =:= $) ->
         Num_S = lists:reverse(Num_S0),
         case string:to_float(Num_S) of
             {error, _} ->
@@ -1679,7 +1966,9 @@ bare_word(A_0) ->
     case A_1 of
         "#t" -> true;
         "#f" -> false;
-        _    -> {atom, iolist_to_binary(A_1)}
+        [C|_] when C =:= $% ->
+            {atom, iolist_to_binary(A_1)};
+        _ -> list_to_atom(A_1)
     end.
 
 get_wscr_param_number(Num_S) ->
@@ -1749,18 +2038,146 @@ get_wscr_params(Cont_0) ->
         {ok, Val2} -> Val2
     end,
     ParamsTplsLists = get_wscr_templates(Cont),
-    ParamsLists = 
-        lists:map(fun
+    ParamsLists = lists:map(get_wscr_params_1(), ParamsLists_0),
+    
+    {ok, ParamsTitle, ParamsPreview, ParamsLists, ParamsTplsLists}.
+
+get_wscr_params_1() ->
+    fun
             (["param", ParamName, ParamDefault, ParamKey | _]) ->
                 {ParamName, get_wscr_param_number(ParamDefault),
                     [{key,list_to_atom(ParamKey)}]};
             (["param", ParamName, ParamDefault]) ->
                 {ParamName, get_wscr_param_number(ParamDefault)};
+
+            (["adv_params", {adv_term,Dialog,Vals}]) ->
+                {adv_params,Dialog,Vals};
+            
+            (["menu", Str, Default_S, Opts_S, [[_|_]=_|_]=List]) ->
+                dlg_menu_param(menu, Str, Default_S, Opts_S, List);
+            (["vradio", Str, Default_S, Opts_S, [[_|_]=_|_]=List]) ->
+                dlg_menu_param(vradio, Str, Default_S, Opts_S, List);
+            (["hradio", Str, Default_S, Opts_S, [[_|_]=_|_]=List]) ->
+                dlg_menu_param(hradio, Str, Default_S, Opts_S, List);
+
+            (["menu", Str, Default_S, [[_|_]=_|_]=List]) ->
+                dlg_menu_param(menu, Str, Default_S, "", List);
+            (["vradio", Str, Default_S, [[_|_]=_|_]=List]) ->
+                dlg_menu_param(vradio, Str, Default_S, "", List);
+            (["hradio", Str, Default_S, [[_|_]=_|_]=List]) ->
+                dlg_menu_param(hradio, Str, Default_S, "", List);
+
+            (["menu", Str, [[_|_]=_|_]=List]) ->
+                dlg_menu_param(menu, Str, dlg_menu_param_first_item(List), "", List);
+            (["vradio", Str, [[_|_]=_|_]=List]) ->
+                dlg_menu_param(vradio, Str, dlg_menu_param_first_item(List), "", List);
+            (["hradio", Str, [[_|_]=_|_]=List]) ->
+                dlg_menu_param(hradio, Str, dlg_menu_param_first_item(List), "", List);
+
+            (["checkbox", Str, Default_S, Opts_S]) ->
+                dlg_checkbox_param(Str, Default_S, Opts_S);
+            (["checkbox", Str, Default_S]) ->
+                dlg_checkbox_param(Str, Default_S, "");
+            (["checkbox", Str]) ->
+                dlg_checkbox_param(Str, "false", "");
+
+            (["browse", Str, Default, Opts_S]) ->
+                dlg_browse_param(Str, Default, Opts_S);
+            (["browse", Str, Default]) ->
+                dlg_browse_param(Str, Default, "");
+            (["browse", Str]) ->
+                dlg_browse_param(Str, "", "");
+
             (_) ->
                 {"???", 0}
-        end, ParamsLists_0),
-    
-    {ok, ParamsTitle, ParamsPreview, ParamsLists, ParamsTplsLists}.
+    end.
+
+dlg_menu_param(Type, Str, Default_S, Opts_S, List) ->
+    Default = dlg_menu_item_val(Default_S),
+    L2 = [dlg_menu_item(A) || A <- List],
+    case string:tokens(Opts_S, ",") of
+        [] ->
+            {menu,{Type,L2},Str,Default};
+        Opts1 when is_list(Opts1) ->
+            {menu,{Type,L2},Str,Default,dlg_menu_opts(Opts1)}
+    end.
+
+dlg_menu_param_first_item([["item",_,Val]=_|_]=_) ->
+    dlg_menu_item_val(Val).
+
+dlg_checkbox_param(Str, Default_S, Opts_S) ->
+    Default = dlg_menu_item_bool(Default_S),
+    case string:tokens(Opts_S, ",") of
+        [] ->
+            {checkbox,{checkbox},Str,Default};
+        Opts1 when is_list(Opts1) ->
+            {checkbox,{checkbox},Str,Default,dlg_menu_opts(Opts1)}
+    end.
+
+dlg_browse_param(Str, Default, Opts_S) ->
+    case string:tokens(Opts_S, ",") of
+        [] ->
+            {browse,{browse},Str,Default};
+        Opts1 when is_list(Opts1) ->
+            {browse,{browse},Str,Default,dlg_menu_opts(Opts1)}
+    end.
+
+dlg_menu_opts(Opts) ->
+    [begin
+        case string:split(O,"=") of
+            [Key] ->
+                {key,list_to_atom(Key)};
+            [Key,Val] ->
+                case lists:member(Key, ["key", "dialog_type"]) of
+                    true ->
+                        {list_to_atom(Key),list_to_atom(Val)};
+                    _ -> %% "title"
+                        {list_to_atom(Key),Val}
+                end
+        end
+     end || O <- Opts].
+
+dlg_menu_item(["item", Str, Val]) ->
+    {Str, dlg_menu_item_val(Val)};
+dlg_menu_item(_) ->
+    false.
+
+dlg_menu_item_bool(Val)
+  when is_list(Val) ->
+    case string:lowercase(string:trim(Val)) of
+        "t" ++ _ -> true;
+        "f" ++ _ -> false;
+        "y" ++ _ -> true;
+        "n" ++ _ -> false;
+        "1" -> true;
+        "0" -> false;
+        _ -> Val
+    end.
+
+dlg_menu_item_val(Val) ->
+    case string:to_float(Val) of
+        {Num, []} -> Num;
+        _ -> dlg_menu_item_val_1(Val)
+    end.
+dlg_menu_item_val_1(Val) ->
+    case string:to_integer(Val) of
+        {Num, []} -> Num;
+        _ -> dlg_menu_item_val_2(Val)
+    end.
+dlg_menu_item_val_2(Val) ->
+    F = fun (C) when C >= $a, C =< $z;
+                     C >= $A, C =< $Z;
+                     C >= $0, C =< $9;
+                     C =:= $_        -> true;
+            (_) -> false
+    end,
+    case lists:all(F, Val) of
+        true ->
+            list_to_atom(Val);
+        _ ->
+            Val
+    end.
+
 
 get_wscr_import_export_params(Cont_0) ->
     Cont = wscr_to_proplist(Cont_0),
@@ -1803,18 +2220,44 @@ fill_extra_files(ExtraFileChoosers, #command_rec{extrafileinputs=ExtraFiles}=_Co
 
 to_dialog_params(List, State, Dict) ->
     to_dialog_params(List, State, Dict, []).
-to_dialog_params([{A,Number,C} | List], State, Dict, OList) when is_integer(Number); is_float(Number) ->
-    to_dialog_params(List, State, Dict, [{A, Number, C} | OList]);
-to_dialog_params([{A,Number} | List], State, Dict, OList) when is_integer(Number); is_float(Number) ->
-    to_dialog_params(List, State, Dict, [{A, Number} | OList]);
-to_dialog_params([{A,PV,C} | List], State, Dict, OList) ->
-    {Val, _} = crun_pv(PV, State, Dict),
-    to_dialog_params(List, State, Dict, [{A, Val, C} | OList]);
-to_dialog_params([{A,PV} | List], State, Dict, OList) ->
-    {Val, _} = crun_pv(PV, State, Dict),
-    to_dialog_params(List, State, Dict, [{A, Val} | OList]);
+to_dialog_params([{A,Val,C} | List], State, Dict, OList)
+  when is_list(A) ->
+    to_dialog_params(List, State, Dict,
+        [{A, to_dialog_param_1(Val, State, Dict), C}
+        | OList]);
+to_dialog_params([{A,Val} | List], State, Dict, OList)
+  when is_list(A) ->
+    to_dialog_params(List, State, Dict,
+        [{A, to_dialog_param_1(Val, State, Dict)}
+        | OList]);
+to_dialog_params([{adv_params,Tuple,Vals} | List], State, Dict, OList)
+  when is_list(Vals) ->
+    to_dialog_params(List, State, Dict,
+        [{adv_params,Tuple,[{Label,to_dialog_param_1(Val, State, Dict)} || {Label,Val} <- Vals]}
+        | OList]);
+to_dialog_params([{Atom,AtomSet,A,Val,C} | List], State, Dict, OList)
+  when is_list(A),is_atom(Atom),is_tuple(AtomSet) ->
+    to_dialog_params(List, State, Dict,
+        [{Atom,AtomSet,A, to_dialog_param_1(Val, State, Dict), C}
+        | OList]);
+to_dialog_params([{Atom,AtomSet,A,Val} | List], State, Dict, OList)
+  when is_list(A),is_atom(Atom),is_tuple(AtomSet) ->
+    to_dialog_params(List, State, Dict,
+        [{Atom,AtomSet,A, to_dialog_param_1(Val, State, Dict)}
+        | OList]);
 to_dialog_params([], _, _, OList) ->
     lists:reverse(OList).
+
+to_dialog_param_1(Number, _State, _Dict)
+  when is_integer(Number);
+       is_float(Number);
+       is_atom(Number) ->
+    Number;
+to_dialog_param_1(PV, State, Dict)
+  when is_list(PV) ->
+    {Val, _} = crun_pv(PV, State, Dict),
+    Val.
+
 
 append_extra_files(ExtraFiles, PSScriptParams) ->
     [{K1,{string,V1}} || {K1,V1} <- ExtraFiles] ++ PSScriptParams.
@@ -1864,7 +2307,7 @@ make_shape_from_script(Params, #command_rec{wscrcont=WSCRContent}=CommandRec, St
 make_shape_from_script(ScriptParams, #command_rec{wscrcont=WSCRContent,scrfile=ScriptFileName,scrtype=ScriptType}=CommandRec, St)
   when is_list(ScriptParams) ->
     case fill_extra_files(find_extra_file_sections(WSCRContent), CommandRec) of
-        {file_inputs, ExtraFiles} ->
+        {file_inputs, ExtraFiles} ->io:format("ScriptParams=~p~n",[ScriptParams]),
             Dict = orddict:from_list([{"st", St}, {"params", ScriptParams}]),
             {ParamsSetVars, _} = crun_section("params_set", WSCRContent, Dict),
             case orddict:find(script_params, ParamsSetVars) of
@@ -1955,28 +2398,41 @@ command_from_script(Op, ScriptParams, #command_rec{wscrcont=WSCRContent,
             {CmdInputs,CmdChanges} = wscr_command(WSCRContent),
             PSScriptParams_1 = [[binstr(K), V]
                 || {K, V} <- append_extra_files(ExtraFiles, PSScriptParams)],
-            {St1, Changed} = wings_sel:mapfold(fun (_ShapeBody, We0, Changed_0) ->
-                {CmdExtraParams, ModCache} = command_extra_params(CmdInputs, We0),
-                case run_script_once(ScriptType, ScriptFileName, ScriptParams,
-                    [[<<"op">>, Op] |
-                     CmdExtraParams ++ PSScriptParams_1],
-                    get_settings_for_run_script(), error)
-                of
-                    {ok, Return} ->
-                        command_modifications(Return, ModCache, CmdChanges, We0, Changed_0);
-                    {error, Err} ->
-                        io:format("Error: ~p: ~p~n", [ScriptFileName, Err]),
-                        %% wings_error:error(Err},
-                        {We0, Changed_0}
-                end
-            end, false, St),
-            case Changed of
-                true ->
-                    {save_state, St1};
-                false ->
-                    St
-            end
+            CmdType = {mapfold, CmdInputs, CmdChanges},
+            command_from_script_1(
+                CmdType, ScriptType, ScriptFileName,
+                Op, ScriptParams, PSScriptParams_1, St)
     end.
+
+
+%% Using wings_sel:mapfold/3, the script is called for each We0 object,
+%% and a list of changes is applied to We0.
+command_from_script_1({mapfold, CmdInputs, CmdChanges},
+                      ScriptType, ScriptFileName,
+                      Op, ScriptParams, PSScriptParams_1, St) ->
+    {St1, Changed} = wings_sel:mapfold(fun (_ShapeBody, We0, Changed_0) ->
+        {CmdExtraParams, ModCache} = command_extra_params(CmdInputs, We0),
+        case run_script_once(ScriptType, ScriptFileName, ScriptParams,
+            [[<<"op">>, Op] |
+             CmdExtraParams ++ PSScriptParams_1],
+            get_settings_for_run_script(), error)
+        of
+            {ok, Return} ->
+                command_modifications(Return, ModCache, CmdChanges, We0, Changed_0);
+            {error, Err} ->
+                err(io_lib:format("~p: ~p", [ScriptFileName, Err])),
+                {We0, Changed_0}
+        end
+    end, false, St),
+    case Changed of
+        true ->
+            {save_state, St1};
+        false ->
+            St
+    end.
+
+
+
     
 wscr_command(Cont_0) ->
     Cont = wscr_to_proplist(Cont_0),
@@ -1999,6 +2455,8 @@ wscr_command_1([A|List], OL) ->
         "face_colors" -> face_colors;
         "face_uvs" -> face_uvs;
         "edges" -> edges;
+        "e3d_mesh" -> e3d_mesh;
+        "we" -> we;
         _ -> unknown
     end,
     wscr_command_1(List, [A_1|OL]);
@@ -2045,6 +2503,14 @@ command_extra_params([face_uvs | R], #we{fs=Ftab}=We0, EP, MC) ->
 command_extra_params([edges | R], #we{vp=_Vtab}=We0, EP, MC) ->
     P = [<<"edges">>, []],
     command_extra_params(R, We0, [P | EP], MC);
+command_extra_params([e3d_mesh | R], #we{vp=_Vtab}=We0, EP, MC) ->
+    Mesh = sendout_mesh(We0),
+    P = [<<"e3d_mesh">>, Mesh],
+    command_extra_params(R, We0, [P | EP], [{e3d_mesh, Mesh}|MC]);
+command_extra_params([we | R], #we{vp=_Vtab}=We0, EP, MC) ->
+    P = [<<"we">>, We0],
+    command_extra_params(R, We0, [P | EP], [{we, We0}|MC]);
+
 command_extra_params([], _We0, EP, MC) ->
     {lists:reverse(EP), lists:reverse(MC)}.
 
@@ -2053,88 +2519,97 @@ command_extra_params([], _We0, EP, MC) ->
 %%
 command_modifications(Returned, MC, Changeable, We0, Changed) ->
     command_modifications(Returned, MC, Changeable, We0, false, Changed).
-command_modifications([{set_points, Vtab_2} | R], MC, Changeable, We0, LocalChange, Changed) ->
+command_modifications([[set_points, Vtab_2] | R], MC, Changeable, We0, LocalChange, Changed) ->
     Vtab_1 = proplists:get_value(points, MC, none),
     case proplists:get_value(points, Changeable, false) of
+        false ->
+            command_modifications(R, MC, Changeable, We0, LocalChange, Changed);
         true when length(Vtab_2) =:= length(Vtab_1) ->
             We1 = We0#we{vp=array:from_orddict(Vtab_2)},
             ?DEBUG_FMT("Got points:~p~n", [Vtab_2]),
             command_modifications(R, MC, Changeable, We1, true, Changed);
         _ ->
             %% Returned points should be exactly the same length as input
+            warn(?__(1,"Returned list of set_points is different length.")),
             command_modifications(R, MC, Changeable, We0, LocalChange, Changed)
     end;
-command_modifications([{set_face_uvs, Vtab_2} | R], MC, Changeable, We0, LocalChange, Changed) ->
+command_modifications([[set_face_uvs, Vtab_2] | R], MC, Changeable, We0, LocalChange, Changed) ->
     Vtab_1 = proplists:get_value(face_uvs, MC, none),
     case proplists:get_value(face_uvs, Changeable, false) of
+        false ->
+            command_modifications(R, MC, Changeable, We0, LocalChange, Changed);
         true when length(Vtab_2) =:= length(Vtab_1) ->
-            We1 = lists:foldl(fun({FNum, UVList}, W) ->
-                set_face_va_uv(FNum, unbool_none(UVList), W)
+            We1 = lists:foldl(fun({FNum, UVList}, W) ->io:format("~n~nwings_va:set_face_uv_vs ...~n~n",[]),
+                wings_va:set_face_attr_vs(uv, FNum, unbool_none(UVList), W)
             end, We0, Vtab_2),
             command_modifications(R, MC, Changeable, We1, true, Changed);
         _ ->
             %% Returned face_uvs should be exactly the same length as input
+            warn(?__(2,"Returned list of set_face_uvs is different length.")),
             command_modifications(R, MC, Changeable, We0, LocalChange, Changed)
     end;
-command_modifications([{set_face_colors, Vtab_2} | R], MC, Changeable, We0, LocalChange, Changed) ->
+command_modifications([[set_face_colors, Vtab_2] | R], MC, Changeable, We0, LocalChange, Changed) ->
     Vtab_1 = proplists:get_value(face_colors, MC, none),
     case proplists:get_value(face_colors, Changeable, false) of
-        true when length(Vtab_2) =:= length(Vtab_1) ->
+        false ->
+            command_modifications(R, MC, Changeable, We0, LocalChange, Changed);
+        true when length(Vtab_2) =:= length(Vtab_1) ->io:format("~n~nwings_va:set_face_color_vs ...~n~n",[]),
             We1 = lists:foldl(fun({FNum, ColorList}, W) ->
-                set_face_va_color(FNum, unbool_none(ColorList), W)
+                wings_va:set_face_attr_vs(color, FNum, unbool_none(ColorList), W)
             end, We0, Vtab_2),
             command_modifications(R, MC, Changeable, We1, true, Changed);
         _ ->
             %% Returned face_colors should be exactly the same length as input
+            warn(?__(3,"Returned list of set_face_colors is different length.")),
             command_modifications(R, MC, Changeable, We0, LocalChange, Changed)
     end;
+command_modifications([[set_e3d_mesh, Mesh_1] | R], MC, Changeable, We0, LocalChange, Changed) ->
+    case proplists:get_value(e3d_mesh, Changeable, false) of
+        false ->
+            command_modifications(R, MC, Changeable, We0, LocalChange, Changed);
+        true when is_record(Mesh_1, e3d_mesh) ->
+            We1 = merge_we_from_e3d(We0, returned_mesh(Mesh_1)),
+            command_modifications(R, MC, Changeable, We1, true, Changed);
+        _ ->
+            %% Returned face_colors should be exactly the same length as input
+            warn(?__(4,"Returned e3d_mesh is not a valid record'.")),
+            command_modifications(R, MC, Changeable, We0, LocalChange, Changed)
+    end;
+command_modifications([[set_we, We1] | R], MC, Changeable, We0, LocalChange, Changed) ->
+    case proplists:get_value(we, Changeable, false) of
+        false ->
+            command_modifications(R, MC, Changeable, We0, LocalChange, Changed);
+        true when is_record(We1, we) ->
+            command_modifications(R, MC, Changeable, We1, true, Changed);
+        _ ->
+            %% Returned face_colors should be exactly the same length as input
+            warn(?__(5,"Returned we isn't a valid we record'.")),
+            command_modifications(R, MC, Changeable, We0, LocalChange, Changed)
+    end;
+
 command_modifications([], _MC, _Changeable, We0, false, Changed) ->
     ?DEBUG_FMT("Did not change:~p~n", [Return]),
     {We0, Changed};
 command_modifications([], _MC, _Changeable, We0, true, _) ->
     {We0, true}.
-    
 
-set_face_va_uv(Face, NewUV, #we{fs=Ftab}=We0) ->
-    Edge = gb_trees:get(Face, Ftab),
-    set_face_va_uv(Face, Edge, Edge, lists:reverse(NewUV), We0).
-set_face_va_uv(_, LastEdge, LastEdge, [], We) -> We;
-set_face_va_uv(Face, Edge, LastEdge, [NUV|NewUV], #we{es=Etab}=We0) ->
-    case array:get(Edge, Etab) of
-    #edge{lf=Face,ltsu=NextEdge} ->
-        set_face_va_uv(Face, NextEdge, LastEdge, NewUV, 
-            set_face_va_uv_set(Edge, Face, NUV, We0));
-    #edge{rf=Face,rtsu=NextEdge} ->
-        set_face_va_uv(Face, NextEdge, LastEdge, NewUV, 
-            set_face_va_uv_set(Edge, Face, NUV, We0))
-    end.
-set_face_va_uv_set(Edge, Face, NUV, We0) ->
-    wings_va:set_edge_attrs(Edge, Face,
-        new_uv(NUV, wings_va:edge_attrs(Edge, Face, We0)),
-        We0).
-new_uv(UV, OA) ->
-    wings_va:new_attr(wings_va:attr(uv, OA), UV).
 
-set_face_va_color(Face, NewColors, #we{fs=Ftab}=We0) ->
-    Edge = gb_trees:get(Face, Ftab),
-    set_face_va_color(Face, Edge, Edge, lists:reverse(NewColors), We0).
-set_face_va_color(_, LastEdge, LastEdge, [], We) -> We;
-set_face_va_color(Face, Edge, LastEdge, [NColor|NewColors], #we{es=Etab}=We0) ->
-    case array:get(Edge, Etab) of
-    #edge{lf=Face,ltsu=NextEdge} ->
-        set_face_va_color(Face, NextEdge, LastEdge, NewColors,
-            set_face_va_color_set(Edge, Face, NColor, We0));
-    #edge{rf=Face,rtsu=NextEdge} ->
-        set_face_va_color(Face, NextEdge, LastEdge, NewColors,
-            set_face_va_color_set(Edge, Face, NColor, We0))
-    end.
-set_face_va_color_set(Edge, Face, NColor, We0) ->
-    wings_va:set_edge_attrs(Edge, Face,
-        new_color(NColor, wings_va:edge_attrs(Edge, Face, We0)),
-        We0).
-new_color(Color, OA) ->
-    wings_va:new_attr(Color, wings_va:attr(uv, OA)).
 
+merge_we_from_e3d(We0, We2) ->
+    #we{es=W1Es,lv=W1Lv,rv=W1Rv,fs=W1Fs,he=W1He,vc=W1Vc,vp=W1Vp,mat=W1Mat,next_id=W1NextId,mirror=W1Mirror,holes=W1Holes} = We2,
+    We0#we{es=W1Es,lv=W1Lv,rv=W1Rv,fs=W1Fs,he=W1He,vc=W1Vc,vp=W1Vp,mat=W1Mat,next_id=W1NextId,mirror=W1Mirror,holes=W1Holes}.
+
+
+sendout_mesh(We0) ->
+    wings_export:make_mesh(We0, []).
+
+returned_mesh(#e3d_mesh{}=Mesh0) ->
+    Mesh1 = e3d_mesh:merge_vertices(Mesh0),
+    Mesh2 = e3d_mesh:clean_faces(Mesh1),
+    Mesh3 = e3d_mesh:transform(Mesh2),
+    Mesh  = e3d_mesh:hard_edges_from_normals(Mesh3),
+    We0 = wings_import:import_mesh(material, Mesh),
+    We0.
 
 bool_none(L) ->
     [bool_none_1(A) || A <- L].
@@ -2252,6 +2727,7 @@ import_export_from_script(Op, ScriptParams, #command_rec{wscrcont=WSCRContent,
                                 ?DEBUG_FMT("RETURNED: ~p~n", [Return]),
                                 case Return of
                                     {ok} -> ok;
+                                    [ok] -> ok;
                                     _    -> {error, "Error"}
                                 end;
                             {error, Err} ->
@@ -2372,11 +2848,11 @@ e3df_image_conv(".png", TempFile_0, E3DImg) ->
     {ok, TempFile};
 e3df_image_conv(".bmp", TempFile_0, E3DImg) ->
     TempFile = TempFile_0 ++ ".bmp",
-    ok = e3d__bmp:save(E3DImg, TempFile),
+    ok = e3d__bmp:save(E3DImg, TempFile, []),
     {ok, TempFile};
 e3df_image_conv(".tga", TempFile_0, E3DImg) ->
     TempFile = TempFile_0 ++ ".tga",
-    ok = e3d__tga:save(E3DImg, TempFile),
+    ok = e3d__tga:save(E3DImg, TempFile, []),
     {ok, TempFile};
 e3df_image_conv(bytes, TempFile, #e3d_image{image=ImageBin}=_) ->
     ok = file:write_file(TempFile, ImageBin),
@@ -2423,7 +2899,7 @@ e3df_from_script_image_1(bytes, #e3d_image{image=TempFile_0}=T, TempFolder) ->
                     {no_temp, T_1}
             end;
         _ ->
-            io:format("~p: Filename not found: ~p~n", [?MODULE, TempFile_1]),
+            warn(io_lib:format("Filename not found: ~p", [TempFile_1])),
             error(e3d_image_raw_filename_not_found)
     end;
 e3df_from_script_image_1(Conv, #e3d_image{filename=TempFile_1}=T, _TempFolder) ->
@@ -2432,7 +2908,7 @@ e3df_from_script_image_1(Conv, #e3d_image{filename=TempFile_1}=T, _TempFolder) -
             T_1 = e3df_from_script_image_conv(Conv, T, TempFile_1),
             {no_temp, T_1};
         _ ->
-            io:format("~p: Filename not found: ~p~n", [?MODULE, TempFile_1]),
+            warn(io_lib:format("Filename not found: ~p", [TempFile_1])),
             error(e3d_image_filename_not_found)
     end.
 
@@ -2526,11 +3002,22 @@ delete_temps(TempFolder, [_TempFile | TempFiles]) ->
     delete_temps(TempFolder, TempFiles).
 
 get_settings_for_run_script() ->
-[
-    {setting_py_int_path, wpa:pref_get(?MODULE, setting_py_int_path, "python")},
-    {setting_scm_int_path, wpa:pref_get(?MODULE, setting_scm_int_path, "csi")},
-    {setting_scm_arguments, wpa:pref_get(?MODULE, setting_scm_arguments, "-q -n -b")}
-].
+    AllEng = scripting_shapes_e:all_engines(),
+    lists:append([
+        get_settings_for_run_script_eng(Eng, HasArgs)
+    || {Eng, HasArgs} <- AllEng ]).
+
+get_settings_for_run_script_eng(_, no_bin) -> [];
+get_settings_for_run_script_eng(Eng, HasArgs)
+  when is_boolean(HasArgs) ->
+    Atom = list_to_atom("setting_" ++ Eng ++ "_int_path"),
+    [{Atom, wpa:pref_get(?MODULE, Atom, "")}] ++
+    get_settings_for_run_script_eng_1(Eng, HasArgs).
+
+get_settings_for_run_script_eng_1(_, false) -> [];
+get_settings_for_run_script_eng_1(Eng, true) ->
+    Atom = list_to_atom("setting_" ++ Eng ++ "_arguments"),
+    [{Atom, wpa:pref_get(?MODULE, Atom, "")}].
 
 
 
@@ -2679,7 +3166,7 @@ crun("export_param", [K, PV], State, Dict) ->
 crun("save_pref", [K, PV], State, Dict) ->
     {PVRes, State_1} = crun_pv(PV, State, Dict),
     %% Save into preference from path value PV
-    io:format("save_pref ~s ~p~n", [K, PVRes]),
+    io:format("TODO: save_pref ~s ~p~n", [K, PVRes]),
     {PVRes, State_1};
 
 crun("load_pref", [K, VS, PVDefault], State, Dict) ->
@@ -2690,7 +3177,7 @@ crun("load_pref", [K, VS, PVDefault], State, Dict) ->
     end,
     
     %% Load from preference and into value slot VS
-    io:format("load_pref ~s ~p~n", [K, VS]),
+    io:format("TODO: load_pref ~s ~p~n", [K, VS]),
     State_1 = State,
     {ok, State_1}.
     
@@ -2744,10 +3231,7 @@ etp_run([{start,{atom,N}} | R], State, Dict) when is_binary(N) ->
     etp_run(R, State#crun_state{p=list_to_atom(unbinstr(N))}, Dict);
 etp_run([{start,{call,Mod,Name,Args}} | R], State, Dict) ->
     %% Our config path language is lazy evaluated, evaluate all the arguments first
-    {Args_2, State_3} = lists:foldl(fun(A, {Args_1, State_1}) ->
-        {Ret_1, State_2} = etp_run(A, State_1, Dict),
-        {[Ret_1|Args_1], State_2}
-    end, {[], State}, Args),
+    {Args_2, State_3} = etp_map_args(Args, State, Dict), 
     %% We actually call an erlang function here.
     Return = apply(list_to_atom(Mod), list_to_atom(Name), lists:reverse(Args_2)),
     etp_run(R, State_3#crun_state{p=Return}, Dict);
@@ -2825,30 +3309,27 @@ etp_get_term([{start,_}]=C, State, Dict) ->
             {Ret, State_1}
     end.
 
-etp_run_call("list", Args, State, Dict) ->
-    {Args_2, State_3} = lists:foldl(fun(A, {Args_1, State_1}) ->
+etp_map_args(Args, State, Dict) ->
+    lists:foldl(fun(A, {Args_1, State_1}) ->
         {Ret_1, State_2} = etp_run(A, State_1, Dict),
         {[Ret_1|Args_1], State_2}
-    end, {[], State}, Args),
+    end, {[], State}, Args).
+
+etp_run_call("list", Args, State, Dict) ->
+    {Args_2, State_3} = etp_map_args(Args, State, Dict),
     {lists:reverse(Args_2), State_3};
     
 etp_run_call("tuple", Args, State, Dict) ->
-    {Args_2, State_3} = lists:foldl(fun(A, {Args_1, State_1}) ->
-        {Ret_1, State_2} = etp_run(A, State_1, Dict),
-        {[Ret_1|Args_1], State_2}
-    end, {[], State}, Args),
+    {Args_2, State_3} = etp_map_args(Args, State, Dict),
     {list_to_tuple(lists:reverse(Args_2)), State_3};
 
 etp_run_call("bool", Args, State, Dict) ->
-    {[Arg1 | _], State_3} = lists:foldl(fun(A, {Args_1, State_1}) ->
-        {Ret_1, State_2} = etp_run(A, State_1, Dict),
-        {[Ret_1|Args_1], State_2}
-    end, {[], State}, Args),
+    {[Arg1 | _], State_3} = etp_map_args(Args, State, Dict),
     Arg1Bool = case Arg1 of
         Arg1 when is_integer(Arg1), (Arg1 > 0) orelse (Arg1 =:= -1) -> true;
         Arg1 when is_float(Arg1), Arg1 >= 1.0 -> true;
         0 -> false;
-        0.0 -> false;
+        Zero when abs(Zero) < ?EPSILON -> false;
         Str when is_list(Str) ->
             case Str of
                 [$t | _] -> true;
@@ -2860,10 +3341,7 @@ etp_run_call("bool", Args, State, Dict) ->
     {Arg1Bool, State_3};
 
 etp_run_call("int", Args, State, Dict) ->
-    {[Arg1 | _], State_3} = lists:foldl(fun(A, {Args_1, State_1}) ->
-        {Ret_1, State_2} = etp_run(A, State_1, Dict),
-        {[Ret_1|Args_1], State_2}
-    end, {[], State}, Args),
+    {[Arg1 | _], State_3} = etp_map_args(Args, State, Dict),
     Arg1Int = case Arg1 of
         Arg1 when is_integer(Arg1) -> Arg1;
         Arg1 when is_float(Arg1) -> round(Arg1);
@@ -2883,25 +3361,22 @@ etp_run_call("int", Args, State, Dict) ->
     {Arg1Int, State_3};
     
 etp_run_call("float", Args, State, Dict) ->
-    {[Arg1 | _], State_3} = lists:foldl(fun(A, {Args_1, State_1}) ->
-        {Ret_1, State_2} = etp_run(A, State_1, Dict),
-        {[Ret_1|Args_1], State_2}
-    end, {[], State}, Args),
+    {[Arg1 | _], State_3} = etp_map_args(Args, State, Dict),
     Arg1Float = case Arg1 of
         Arg1 when is_integer(Arg1) -> float(Arg1);
         Arg1 when is_float(Arg1) -> Arg1;
         true -> 1.0;
-        false -> 0.0;
+        false -> +0.0;
         Str when is_list(Str) ->
             case string:to_float(Str) of
                 {Num_F, _} when is_float(Num_F) -> Num_F;
                 _ ->
                     case string:to_integer(Str) of
                         {Num_I, _} when is_integer(Num_I) -> float(Num_I);
-                        _ -> 0.0
+                        _ -> +0.0
                     end
             end;
-        _ -> 0.0
+        _ -> +0.0
     end,
     {Arg1Float, State_3};
     
@@ -2962,12 +3437,10 @@ etp_run_call("if", [ArgTest, ArgThen], State, Dict) ->
     
     
 etp_run_call("void", Args, State, Dict) ->
-    {Ret_2, State_3} = lists:foldl(fun(A, {_, State_1}) ->
-        {Ret_1, State_2} = etp_run(A, State_1, Dict),
-        {Ret_1, State_2}
-    end, {[], State}, Args),
-    {Ret_2, State_3};
-    
+    lists:foldl(fun(A, {_, State_1}) ->
+        etp_run(A, State_1, Dict)
+    end, {[], State}, Args);
+
 etp_run_call("map", Args, State_0, Dict) ->
     [DoEr, ListArg | _] = Args,
     {List_1, State} = etp_run(ListArg, State_0, Dict),
@@ -3036,8 +3509,10 @@ etp_store_temp(K, V, State) ->
             State#crun_state.temp_vars)
     }.
 
+
 %% Easier access to some record fields than by tuple index
-tuple_n_from_field(Tuple, FieldName) when is_tuple(Tuple) ->
+tuple_n_from_field(Tuple, FieldName)
+  when is_tuple(Tuple) ->
     TT = element(1, Tuple),
     tuple_n_from_f(TT, FieldName).
 tuple_n_from_f(st, F) ->
@@ -3440,9 +3915,11 @@ etp_word_or_number(WO) ->
 %%
 etp_read_string_in_dq(A) -> etp_read_string_in_dq(A, []).
 etp_read_string_in_dq([], AL) -> {binstr(lists:reverse(AL)), []};
-etp_read_string_in_dq([BS, EscChar | Rest], AL) when BS =:= 92 ->
+etp_read_string_in_dq([BS, EscChar | Rest], AL)
+  when BS =:= 92 -> %% Backslash
     etp_read_string_in_dq(Rest, [EscChar|AL]);
-etp_read_string_in_dq([DQ | Rest], AL) when DQ =:= 34 ->
+etp_read_string_in_dq([DQ | Rest], AL)
+  when DQ =:= 34 -> %% Double quote
     {binstr(lists:reverse(AL)), Rest};
 etp_read_string_in_dq([Char | Rest], AL) ->
     etp_read_string_in_dq(Rest, [Char|AL]).
@@ -3451,13 +3928,25 @@ etp_read_string_in_dq([Char | Rest], AL) ->
 %%
 etp_read_atom_in_q(A) -> etp_read_atom_in_q(A, []).
 etp_read_atom_in_q([], AL) -> {binstr(lists:reverse(AL)), []};
-etp_read_atom_in_q([BS, EscChar | Rest], AL) when BS =:= 92 ->
+etp_read_atom_in_q([BS, EscChar | Rest], AL)
+  when BS =:= 92 -> %% Back slash
     etp_read_atom_in_q(Rest, [EscChar|AL]);
-etp_read_atom_in_q([AQ | Rest], AL) when AQ =:= $' ->
+etp_read_atom_in_q([AQ | Rest], AL)
+  when AQ =:= $' -> %% Single quote
     {binstr(lists:reverse(AL)), Rest};
 etp_read_atom_in_q([Char | Rest], AL) ->
     etp_read_atom_in_q(Rest, [Char|AL]).
 
+
+
+warn(Str) ->
+    io:format("~p: WARNING: ~s~n", [?MODULE, Str]).
+
+scr_debug(Str) ->
+    io:format("DEBUG: ~s~n", [Str]).
+
+err(Str) ->
+    io:format("~p: ERROR: ~s~n", [?MODULE,Str]).
 
 
 
@@ -3478,7 +3967,6 @@ test_wscr_content() ->
 t() ->
     Settings = [],
     run_script_once("py", "C:\\Stuff\\___w3d\\plugins\\primitives\\src\\w3d_scripts\\Script3.py", [7, 2.0, 0.1], [], Settings, keep).
-    % run_script_once("scm", "C:\\Stuff\\___w3d\\plugins\\primitives\\src\\w3d_scripts\\Script1.scm", [7, 2.0, 0.1], []).
 
 test() ->
     Dict = [{"st", {st, 1,2,3,4}}],

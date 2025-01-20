@@ -1,0 +1,21 @@
+%%
+%%
+{"scm", true, "init.scm", [
+    "gosh",
+    "csi"
+], [
+    {auto_fill, [
+    %% Required arguments for Chicken Scheme interpreter (csi)
+        {"csi", [
+            "-q", "-n", "-b",
+            "-eval", {wrap, "(load \"%s\")", {esc, {absname, "init_env_csi.scm", "%BASEDIR%"}}}
+        ]},
+    %% Required arguments for Gauche shell (gosh)
+        {"gosh", [
+            "-q", "-b",
+            {concat, "-A", "%BASEDIR%"},
+            {concat, "-l", "init_env_gauche.scm"}
+        ]}
+    ]}
+]}.
+

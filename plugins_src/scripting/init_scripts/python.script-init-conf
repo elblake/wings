@@ -1,0 +1,13 @@
+%%
+%%
+{"py", false, "init.py", [
+    "python",
+    "python38",
+    "python36",
+    "python34",
+    "python32",
+    "python3"
+], [
+
+]}.
+

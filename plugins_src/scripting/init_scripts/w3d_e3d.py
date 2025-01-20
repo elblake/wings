@@ -42,6 +42,17 @@ def list_of_objects_to_outputlist(objlist):
 	else:
 		return objlist.as_output_list()
 
+
+def list_of_pairs_to_outputlist(objlist):
+	if hasattr(objlist, "__len__"):
+		outputlist = OutputList()
+		for obj in objlist:
+			o = obj.as_output_list()
+			outputlist.add_vector(o)
+		return outputlist
+	else:
+		return objlist.as_output_list()
+
 def list_of_atoms_to_outputlist(objlist):
 	if hasattr(objlist, "__len__"):
 		outputlist = OutputList()
@@ -386,48 +397,48 @@ class MaterialOpenGLAttributes:
 		ov = OutputList()
 		ov.add_symbol('ambient')
 		ov.add_vector(ov_r)
-		o3.add_list(ov)
+		o3.add_vector(ov)
 		
 		ov_r = OutputList()
 		ov_r.add_numbers(self.specular)
 		ov = OutputList()
 		ov.add_symbol('specular')
 		ov.add_vector(ov_r)
-		o3.add_list(ov)
+		o3.add_vector(ov)
 		
 		ov = OutputList()
 		ov.add_symbol('shininess')
 		ov.add_float(self.shininess)
-		o3.add_list(ov)
+		o3.add_vector(ov)
 		
 		ov_r = OutputList()
 		ov_r.add_numbers(self.diffuse)
 		ov = OutputList()
 		ov.add_symbol('diffuse')
 		ov.add_vector(ov_r)
-		o3.add_list(ov)
+		o3.add_vector(ov)
 		
 		ov_r = OutputList()
 		ov_r.add_numbers(self.emission)
 		ov = OutputList()
 		ov.add_symbol('emission')
 		ov.add_vector(ov_r)
-		o3.add_list(ov)
+		o3.add_vector(ov)
 		
 		ov = OutputList()
 		ov.add_symbol('metallic')
 		ov.add_float(self.metallic)
-		o3.add_list(ov)
+		o3.add_vector(ov)
 		
 		ov = OutputList()
 		ov.add_symbol('roughness')
 		ov.add_float(self.roughness)
-		o3.add_list(ov)
+		o3.add_vector(ov)
 		
 		ov = OutputList()
 		ov.add_symbol('vertex_colors')
 		ov.add_symbol(self.vertex_colors)
-		o3.add_list(ov)
+		o3.add_vector(ov)
 
 		return o3
 	
@@ -466,7 +477,7 @@ class Material:
 			attr_item = OutputList()
 			attr_item.add_symbol(k)
 			attr_item.add_list(v.as_output_list())
-			attr_list.add_list(attr_item)
+			attr_list.add_vector(attr_item)
 		o3.add_list(attr_list)
 		return o3
 	
@@ -499,7 +510,7 @@ class E3DFile:
 		
 		o_objs = OutputList()
 		o3.add_list(list_of_objects_to_outputlist(self.objs))
-		o3.add_list(list_of_objects_to_outputlist(self.mat))
+		o3.add_list(list_of_pairs_to_outputlist(self.mat))
 		
 		o3.add_str(self.creator)
 		o3.add_str(self.dir)
@@ -539,13 +550,14 @@ class SetPoints:
 	def as_output_list(self):
 		o3 = OutputList()
 		for v in self.list:
+			vo2 = OutputList()
 			vo3 = OutputList()
 			vo3.add_float(v[1][0])
 			vo3.add_float(v[1][1])
 			vo3.add_float(v[1][2])
-			v.add_integer(v[0])
-			v.add_vector(vo3)
-			o3.add_vector(v)
+			vo2.add_integer(v[0])
+			vo2.add_vector(vo3)
+			o3.add_vector(vo2)
 		o2 = OutputList()
 		o2.add_symbol("set_points")
 		o2.add_list(o3)
@@ -559,6 +571,17 @@ class SetPoints:
 			a2_y = a2[1]
 			a2_z = a2[2]
 			self.list.append((a1, (a2_x, a2_y, a2_z)))
+
+## For change e3d_mesh scripts
+class SetE3DMesh:
+	def __init__(self, mesh):
+		self.mesh = mesh
+	
+	def as_output_list(self):
+		o2 = OutputList()
+		o2.add_symbol("set_e3d_mesh")
+		o2.add_list(self.mesh.as_output_list())
+		return o2
 
 
 def test():
