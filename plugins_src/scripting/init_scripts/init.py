@@ -93,20 +93,11 @@ def script_loader_loop():
 
 			params = cmd[2]
 
-			#for i in range(0, len(params)):
-			#	pv = params[i]
-			#	if hasattr(pv, "__len__"):
-			#		if len(pv) == 1:
-			#			params[i] = pv[0]
-
 			## Add to params_by_key parameters that are keyed
 			for p in params:
 				if hasattr(p, "__len__"):
 					if len(p) == 2:
 						pv = p[1]
-						#if hasattr(pv, "__len__"):
-						#	if len(pv) == 1:
-						#		pv = pv[0]
 						params_by_key[p[0]] = pv
 
 			## Grab the extra params

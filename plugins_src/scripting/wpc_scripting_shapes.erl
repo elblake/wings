@@ -26,8 +26,8 @@
 
 -record(command_rec, {
     wscrcont,
-    scrfile :: file:filename_all(),
-    scrtype :: string(),
+    scrfile :: file:filename_all() | none,
+    scrtype :: string() | none,
     extrafileinputs=[]
 }).
 
@@ -773,9 +773,7 @@ run_script_runner_inner_loop(Port, RetPID, StartedL, LAcc) ->
     end.
 send_to_scr_port(Port, L, RetPID) ->
     try
-%io:format("L=~p~n",[L]),
         OutP = iolist_to_binary([write_scm(L), <<"\n">>]),
-%io:format("OutP=~p~n",[OutP]),
         port_command(Port, OutP)
     catch
         _:Error:StTr ->
@@ -1041,7 +1039,7 @@ iterate_filenames_1(_, _Filenames, _Path, WingsOpMode, OList, FlN, FullFilename)
 
 
 -spec read_script_info_file(file:filename_all(), wings_op_mode()) ->
-        error | {ok, {file:filename_all(), string(), string(), string()}}.
+        error | {ok, {file:filename_all() | none, string() | none, string(), string()}}.
 read_script_info_file(FlN, WingsOpMode) ->
     NameOnly = string:substr(FlN, 1, string:rchr(FlN, $.)-1),
     case file:read_file(FlN) of
@@ -2307,7 +2305,7 @@ make_shape_from_script(Params, #command_rec{wscrcont=WSCRContent}=CommandRec, St
 make_shape_from_script(ScriptParams, #command_rec{wscrcont=WSCRContent,scrfile=ScriptFileName,scrtype=ScriptType}=CommandRec, St)
   when is_list(ScriptParams) ->
     case fill_extra_files(find_extra_file_sections(WSCRContent), CommandRec) of
-        {file_inputs, ExtraFiles} ->io:format("ScriptParams=~p~n",[ScriptParams]),
+        {file_inputs, ExtraFiles} ->
             Dict = orddict:from_list([{"st", St}, {"params", ScriptParams}]),
             {ParamsSetVars, _} = crun_section("params_set", WSCRContent, Dict),
             case orddict:find(script_params, ParamsSetVars) of
@@ -2539,7 +2537,7 @@ command_modifications([[set_face_uvs, Vtab_2] | R], MC, Changeable, We0, LocalCh
         false ->
             command_modifications(R, MC, Changeable, We0, LocalChange, Changed);
         true when length(Vtab_2) =:= length(Vtab_1) ->
-            We1 = lists:foldl(fun({FNum, UVList}, W) ->io:format("~n~nwings_va:set_face_uv_vs ...~n~n",[]),
+            We1 = lists:foldl(fun({FNum, UVList}, W) ->
                 wings_va:set_face_attr_vs(uv, FNum, unbool_none(UVList), W)
             end, We0, Vtab_2),
             command_modifications(R, MC, Changeable, We1, true, Changed);
@@ -2553,7 +2551,7 @@ command_modifications([[set_face_colors, Vtab_2] | R], MC, Changeable, We0, Loca
     case proplists:get_value(face_colors, Changeable, false) of
         false ->
             command_modifications(R, MC, Changeable, We0, LocalChange, Changed);
-        true when length(Vtab_2) =:= length(Vtab_1) ->io:format("~n~nwings_va:set_face_color_vs ...~n~n",[]),
+        true when length(Vtab_2) =:= length(Vtab_1) ->
             We1 = lists:foldl(fun({FNum, ColorList}, W) ->
                 wings_va:set_face_attr_vs(color, FNum, unbool_none(ColorList), W)
             end, We0, Vtab_2),

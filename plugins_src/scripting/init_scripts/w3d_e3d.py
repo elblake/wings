@@ -380,9 +380,9 @@ class MaterialMaps:
 class MaterialOpenGLAttributes:
 	def __init__(self):
 		self.ambient = [0.0,0.0,0.0,0.0]
-		self.specular = [0.1689853807692308,0.17133333333333334,0.15940444444444446,1.0]
-		self.shininess = 0.19999999999999996
-		self.diffuse = [0.7898538076923077,0.8133333333333334,0.6940444444444445,1.0]
+		self.specular = [0.1,0.1,0.1,1.0]
+		self.shininess = 0.2
+		self.diffuse = [0.7,0.7,0.7,1.0]
 		self.emission = [0.0,0.0,0.0,1.0]
 		self.metallic = 0.1
 		self.roughness = 0.8
