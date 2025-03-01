@@ -344,7 +344,7 @@ sel_sphere_vertex(Points, BBSel, St) ->
 
 
 %%
-%% Select By Radial Axis Range for Normals
+%% Select By Axis for Normals
 %%
 
 radial_range(St) ->
@@ -356,7 +356,7 @@ radial_range(St) ->
           ]],Axis,[{key,axis}]}]},
         {hframe,[{label,?__(3,"Angle Tolerance:")},{text,AngleT,[{key,anglet}]}]}
         ]}],
-    wings_dialog:dialog(?__(1,"Select By Radial Axis Range"), {preview,Frame},
+    wings_dialog:dialog(?__(1,"Select By Axis"), {preview,Frame},
         fun
             ({dialog_preview,Args}) ->
                 {preview,St,radial_range_1(Args, St)};
@@ -385,10 +385,7 @@ radial_range_2(Points, edge, St) ->
 radial_range_2(Points, face, St) ->
     radial_range_face(Points, St);
 radial_range_2(Points, body, St) ->
-    radial_range_2(Points, face, wings_sel_conv:mode(face, St));
-radial_range_2(Points, _, St) ->
-    St1 = wings_sel:set(face, [], St),
-    radial_range_2(Points, face, St1).
+    radial_range_2(Points, face, wings_sel_conv:mode(face, St)).
 
 radial_range_vtx_fun({AngleT,Axis}) ->
     fun (Vs0, We) ->
@@ -409,9 +406,13 @@ radial_range_vertex(Points, St) ->
 
 
 radial_range_edge_fun({AngleT,Axis}) ->
-    fun (Es0, We) ->
+    fun (Es0, #we{es=Etab}=We) ->
         gb_sets:fold(fun (E, Acc) ->
-            case in_angle(Axis, wings_edge:normal(E, We), AngleT) of
+            #edge{vs=V1,ve=V2} = array:get(E,Etab),
+            Normal = e3d_vec:norm(e3d_vec:add(
+                wings_vertex:normal(V1, We),
+                wings_vertex:normal(V2, We))),
+            case in_angle(Axis, Normal, AngleT) of
                 true ->
                     Acc;
                 false ->
